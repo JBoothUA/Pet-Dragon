@@ -1,0 +1,9 @@
+{
+  "name": "pet-dragon-marketplace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "preview": "node tools/mascot-preview.mjs",
+    "preview:animate": "node tools/mascot-preview.mjs --animate"
+  }
+}

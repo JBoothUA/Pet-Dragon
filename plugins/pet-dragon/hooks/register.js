@@ -1,0 +1,489 @@
+import {
+  COLORS,
+  MOODS,
+  FRAMES,
+  SPRITE_WIDTH,
+  spriteRows,
+  pickMood,
+  parseJson,
+  ago,
+  coreApiLight,
+  serviceLight,
+  jiraLight,
+  prLight,
+  outlookLight,
+  teamsLight,
+  indexSkills,
+  suggestSkills,
+  shorten,
+} from './lib.js'
+
+const PANE = 'dragon'
+
+const DEFAULTS = {
+  coreapi_port: 5236,
+  bff_port: 7102,
+  movedocs_port: 7201,
+  coreapi_poll_seconds: 30,
+  messages_poll_seconds: 60,
+  jira_poll_minutes: 5,
+  bitbucket_poll_minutes: 10,
+  jira_jql: 'assignee = currentUser() AND statusCategory != Done',
+  context_warn_percent: 80,
+  skill_suggestions: 'ask',
+  skill_min_score: 2,
+}
+
+// row 0 = local services, row 1 = work. A companion light is checked by its parent's probe.
+const SOURCES = [
+  { id: 'coreapi', label: 'Core', title: 'CoreAPI', row: 0 },
+  { id: 'bff', label: 'BFF', title: 'BFF', row: 0, parent: 'coreapi' },
+  { id: 'movedocs', label: 'MD', title: 'MoveDocs API', row: 0, parent: 'coreapi' },
+  { id: 'jira', label: 'Jira', title: 'Jira', row: 1 },
+  { id: 'bitbucket', label: 'PRs', title: 'Your Bitbucket PRs', row: 1 },
+  { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1 },
+  { id: 'teams', label: 'Teams', title: 'Teams', row: 1, parent: 'outlook' },
+]
+const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
+
+let opts = { ...DEFAULTS }
+let repoRoot = ''
+let isWindows = true
+const session = { state: 'idle', tool: '', contextPct: undefined }
+const lights = {}
+const busy = {}
+let frame = 0
+let flapTimer = null
+let skills = []
+const declined = new Set()
+let suggestionsOff = false
+let lastSuggestion = ''
+
+function intervalMs(id) {
+  if (id === 'coreapi') return Number(opts.coreapi_poll_seconds) * 1000
+  if (id === 'outlook' || id === 'teams') return Number(opts.messages_poll_seconds) * 1000
+  if (id === 'jira') return Number(opts.jira_poll_minutes) * 60_000
+  return Number(opts.bitbucket_poll_minutes) * 60_000
+}
+
+function unreadCount() {
+  const n = Number(lights.outlook?.value)
+  return Number.isFinite(n) ? n : 0
+}
+
+function setLight(id, light, checkedAt) {
+  lights[id] = { ...light, checkedAt }
+}
+
+async function runPowerShell($, script, args) {
+  const file = $.plugin.root + '\\scripts\\' + script
+  const r = await $.process.run(
+    ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file, ...args],
+    { timeoutMs: 60_000 },
+  )
+  return parseJson(r.stdout)
+}
+
+// Results are shared through $.store so several open sessions don't all hit Jira/Bitbucket.
+async function poll($, id, force) {
+  const key = SOURCES.find((s) => s.id === id)?.parent ?? id
+  if (busy[key]) return
+  busy[key] = true
+  try {
+    const now = await $.clock.now()
+    const cached = await $.store.get('light:' + key)
+    if (!force && cached && now - cached.checkedAt < intervalMs(key) * 0.9) {
+      lights[key] = cached
+      for (const c of companions(key)) {
+        const t = await $.store.get('light:' + c)
+        if (t) lights[c] = t
+      }
+      return
+    }
+    if (key === 'coreapi') {
+      if (!isWindows) {
+        for (const s of ['coreapi', ...companions(key)]) setLight(s, { color: COLORS.grey, value: 'n/a', short: 'Port checks need Windows', detail: [] }, now)
+      } else {
+        const ports = [opts.bff_port, opts.movedocs_port].map(String)
+        const [core, svc] = await Promise.all([
+          runPowerShell($, 'coreapi-probe.ps1', ['-Port', String(opts.coreapi_port), '-RepoRoot', repoRoot]),
+          runPowerShell($, 'ports-probe.ps1', ['-Ports', ports.join(',')]),
+        ])
+        setLight('coreapi', coreApiLight(core, opts.coreapi_port), now)
+        setLight('bff', serviceLight('BFF', svc ? svc[ports[0]] ?? { up: false } : null, ports[0]), now)
+        setLight('movedocs', serviceLight('MoveDocs API', svc ? svc[ports[1]] ?? { up: false } : null, ports[1]), now)
+      }
+    } else if (key === 'outlook') {
+      const m = isWindows ? await runPowerShell($, 'messages-probe.ps1', []) : { outlook: 'off', teams: 'off' }
+      setLight('outlook', outlookLight(m), now)
+      setLight('teams', teamsLight(m), now)
+    } else if (key === 'jira') {
+      const r = await $.process.run(
+        ['twg', 'jira', 'workitem', 'query', '--jql', opts.jira_jql, '--limit', '50', '-o', 'json', '--output-summary', 'none'],
+        { timeoutMs: 90_000 },
+      )
+      setLight(key, jiraLight(parseJson(r.stdout)), now)
+    } else if (key === 'bitbucket') {
+      const r = await $.process.run(
+        ['twg', 'prs', 'query', '--scope', 'me', '--role', 'author', '--state', 'open', '-o', 'json', '--output-summary', 'none'],
+        { timeoutMs: 180_000 },
+      )
+      setLight(key, prLight(parseJson(r.stdout)), now)
+    }
+    if (lights[key]) await $.store.set('light:' + key, lights[key])
+    for (const c of companions(key)) if (lights[c]) await $.store.set('light:' + c, lights[c])
+  } catch (err) {
+    const now = await $.clock.now()
+    setLight(key, { color: COLORS.grey, value: '?', short: 'Check failed: ' + shorten(err?.message ?? err, 60), detail: [] }, now)
+  } finally {
+    busy[key] = false
+    $.ui.invalidate('ui.render')
+  }
+}
+
+async function refreshContext($) {
+  try {
+    const u = await $.session.usage()
+    session.contextPct = u?.context?.percent
+  } catch {
+    session.contextPct = undefined
+  }
+}
+
+async function loadSkills($) {
+  try {
+    skills = indexSkills(await $.command.list(), $.plugin.name)
+  } catch {
+    skills = []
+  }
+}
+
+function setState($, state, tool) {
+  session.state = state
+  session.tool = tool ?? ''
+  if (state === 'working' || state === 'tool') {
+    if (!flapTimer) {
+      flapTimer = $.clock.every(450, () => {
+        frame = (frame + 1) % FRAMES.length
+        $.ui.invalidate('ui.render')
+      })
+    }
+  } else if (flapTimer) {
+    flapTimer.cancel()
+    flapTimer = null
+    frame = 0
+  }
+  $.ui.invalidate('ui.render')
+}
+
+function moodNow() {
+  const key = pickMood({
+    session: session.state,
+    unread: unreadCount(),
+    contextPct: session.contextPct,
+    contextWarn: Number(opts.context_warn_percent),
+  })
+  const mood = MOODS[key]
+  const short = key === 'tool' && session.tool ? 'Claude is running ' + session.tool : mood.short
+  return { key, ...mood, short }
+}
+
+// A bug in pet-dragon must never block a tool or a prompt: pass the event through unchanged.
+async function failOpen($, e, next) {
+  return next(e)
+}
+
+export function register(on, options) {
+  opts = { ...DEFAULTS, ...(options ?? {}) }
+
+  on('session.start', async ($, e, next) => {
+    const result = await next(e)
+    await $.command.register({ name: 'dragon', description: 'Pet Dragon: status lights, color legend, skill suggestions', immediate: true })
+    repoRoot = (await $.session.root()) ?? ''
+    isWindows = (await $.env.get('OS')) === 'Windows_NT'
+    for (const s of SOURCES) {
+      const cached = await $.store.get('light:' + s.id)
+      if (cached) lights[s.id] = cached
+    }
+    suggestionsOff = opts.skill_suggestions === 'off' || (await $.store.get('suggestions-off')) === true
+    await loadSkills($)
+    await refreshContext($)
+    // Stagger the first checks so startup isn't one burst of processes
+    $.clock.after(1_000, () => poll($, 'coreapi'))
+    $.clock.after(3_000, () => poll($, 'outlook'))
+    $.clock.after(5_000, () => poll($, 'jira'))
+    $.clock.after(8_000, () => poll($, 'bitbucket'))
+    $.clock.every(intervalMs('coreapi'), () => poll($, 'coreapi'))
+    $.clock.every(intervalMs('outlook'), () => poll($, 'outlook'))
+    $.clock.every(intervalMs('jira'), () => poll($, 'jira'))
+    $.clock.every(intervalMs('bitbucket'), () => poll($, 'bitbucket'))
+    $.clock.every(10 * 60_000, () => loadSkills($))
+    return result
+  })
+
+  on('turn.start', async ($, e, next) => {
+    if (!e.agentId) setState($, 'working')
+    return next(e)
+  })
+
+  on('tool.call', async ($, e, next) => {
+    if (e.agentId) return next(e)
+    const before = session.state
+    // $.ui.ask and Claude's own questions arrive as AskUserQuestion: that means "waiting on you"
+    if (e.tool === 'AskUserQuestion') setState($, 'waiting')
+    else setState($, 'tool', e.tool)
+    try {
+      return await next(e)
+    } finally {
+      if (session.state === 'tool' || session.state === 'waiting') setState($, before === 'idle' || before === 'error' ? before : 'working')
+    }
+  }).catch(failOpen)
+
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    if (!e.agentId && verdict?.decision === 'ask') setState($, 'waiting')
+    return verdict
+  }).catch(failOpen)
+
+  on('turn.complete', async ($, e, next) => {
+    if (e.agentId) return next(e)
+    await refreshContext($)
+    setState($, e.reason === 'error' ? 'error' : 'idle')
+    return next(e)
+  })
+
+  // Skill suggestions: before a prompt goes out, offer related skills and let the user opt in.
+  on('prompt.submit', async ($, e, next) => {
+    if (suggestionsOff || e.command || e.isMeta || e.turnId || e.origin?.kind !== 'composer') return next(e)
+    if (String(e.text ?? '').trim().length < 12) return next(e)
+    if (skills.length === 0) await loadSkills($)
+    const picks = suggestSkills(e.text, skills, { max: 2, minScore: Number(opts.skill_min_score), exclude: declined })
+    $.ui.log('pet-dragon: ' + skills.length + ' skills indexed, suggesting [' + picks.map((p) => p.name + ':' + p.score).join(', ') + ']', { to: 'debug' })
+    if (picks.length === 0) return next(e)
+    lastSuggestion = picks.map((p) => '/' + p.name).join(', ')
+    $.ui.invalidate('ui.render')
+
+    const choices = picks.map((p) => 'Use /' + p.name)
+    if (picks.length > 1) choices.push('Use both')
+    choices.push('No thanks')
+    if (picks.length === 1) choices.push('Stop suggesting')
+    const lines = picks.map((p) => '/' + p.name + ' \u2014 ' + shorten(p.description, 70)).join('  \u00b7  ')
+
+    let answer = ''
+    try {
+      answer = await $.ui.ask('Dragon thinks these skills may help: ' + lines + '. Use one?', {
+        header: 'Dragon',
+        options: choices,
+      })
+    } catch {
+      answer = ''
+    }
+    lastSuggestion = ''
+    $.ui.invalidate('ui.render')
+
+    let chosen = []
+    if (answer === 'Use both') chosen = picks.map((p) => p.name)
+    else {
+      const hit = picks.find((p) => answer === 'Use /' + p.name)
+      if (hit) chosen = [hit.name]
+    }
+    if (answer === 'Stop suggesting') {
+      suggestionsOff = true
+      $.ui.toast('Skill suggestions off for this session. Turn them back on from /dragon.')
+    }
+    if (chosen.length === 0) {
+      for (const p of picks) declined.add(p.name)
+      return next(e)
+    }
+    const note =
+      'The user opted in to these skills for this request: ' +
+      chosen.join(', ') +
+      '. Load each with the Skill tool before doing anything else, then follow it.'
+    return next({ ...e, context: [...(e.context ?? []), note] })
+  }).catch(failOpen)
+
+  on('command.run', { command: 'dragon' }, async ($) => {
+    await $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })
+    return {}
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props?.hasSurvey) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    const width = Math.max(20, (e.props?.bodyColumns ?? 80) - SPRITE_WIDTH - 2)
+    const mood = moodNow()
+    const f = FRAMES[frame] ?? FRAMES[0]
+
+    const dragon = Box({
+      key: 'drg-dragon',
+      flexDirection: 'column',
+      width: SPRITE_WIDTH + 1,
+      children: spriteRows(f, mood.color).map((runs, r) =>
+        Text({
+          key: 'drg-dragon-' + r,
+          children: runs.map((s) =>
+            Text({ color: s.color, backgroundColor: s.backgroundColor, hover: { scope: 'drg-mood' }, children: [s.text] }),
+          ),
+        }),
+      ),
+    })
+
+    const ctx = typeof session.contextPct === 'number' ? '  ctx ' + Math.round(session.contextPct) + '%' : ''
+    const caption = Text({
+      wrap: 'truncate-end',
+      children: [
+        Text({ color: mood.color, bold: true, hover: { scope: 'drg-mood' }, children: ['\u25cf ' + mood.label] }),
+        Text({ dimColor: true, children: [' \u2014 ' + mood.short + ctx] }),
+      ],
+    })
+
+    const ROW_LABELS = ['APIs', 'Work']
+    const lightRow = (row) =>
+      Box({
+        key: 'drg-row-' + row,
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
+          ...SOURCES.filter((s) => s.row === row).map((s) => {
+            const l = lights[s.id]
+            const color = l?.color ?? COLORS.grey
+            return Text({
+              key: 'drg-light-' + s.id,
+              hover: { scope: 'drg-' + s.id, backgroundColor: '#333333' },
+              children: [
+                Text({ color, children: ['\u25cf '] }),
+                Text({ children: [s.label + ' '] }),
+                Text({ color, bold: true, children: [l ? l.value : '\u2026'] }),
+              ],
+            })
+          }),
+        ],
+      })
+
+    // Hover line: a hint by default; the hovered item's explanation is drawn over it
+    const pad = (t) => shorten(t, width).padEnd(width, ' ')
+    const now = Date.now()
+    const reveals = [
+      { scope: 'drg-mood', text: mood.label + ': ' + mood.short },
+      ...SOURCES.map((s) => ({
+        scope: 'drg-' + s.id,
+        text: s.title + ': ' + (lights[s.id]?.short ?? 'checking\u2026') + (lights[s.id] ? '  (' + ago(lights[s.id].checkedAt, now) + ')' : ''),
+      })),
+    ]
+    const hint = lastSuggestion
+      ? 'Dragon suggests ' + lastSuggestion + ' for this prompt'
+      : 'hover Dragon or a light for details \u00b7 /dragon for more'
+    const infoLine = Box({
+      key: 'drg-info',
+      position: 'relative',
+      children: [
+        lastSuggestion ? Text({ color: COLORS.ember, children: [pad(hint)] }) : Text({ dimColor: true, children: [pad(hint)] }),
+        ...reveals.map((r) =>
+          Box({
+            key: 'drg-reveal-' + r.scope,
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            display: 'none',
+            hover: { display: 'flex', scope: r.scope },
+            children: [Text({ color: COLORS.ember, children: [pad(r.text)] })],
+          }),
+        ),
+      ],
+    })
+
+    const mine = Box({
+      key: 'drg-band',
+      flexDirection: 'row',
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, lightRow(0), lightRow(1), infoLine] })],
+    })
+    const theirs = await next(e)
+    return theirs ? Box({ flexDirection: 'column', children: [mine, theirs] }) : mine
+  })
+
+  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
+    if (e.requestId !== PANE) return next(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const now = await $.clock.now()
+    const mood = moodNow()
+    const rows = []
+
+    rows.push(
+      Text({
+        children: [
+          Text({ color: mood.color, bold: true, children: ['\u25cf Dragon: ' + mood.label] }),
+          Text({ dimColor: true, children: [' \u2014 ' + mood.short] }),
+        ],
+      }),
+    )
+    rows.push(Text({ children: [' '] }))
+
+    for (const s of SOURCES) {
+      const l = lights[s.id]
+      rows.push(
+        Text({
+          children: [
+            Text({ color: l?.color ?? COLORS.grey, children: ['\u25cf '] }),
+            Text({ bold: true, children: [s.title + ' '] }),
+            Text({ children: [l?.short ?? 'checking\u2026'] }),
+            Text({ dimColor: true, children: [l ? '  (' + ago(l.checkedAt, now) + ')' : ''] }),
+          ],
+        }),
+      )
+      const detail = l?.detail ?? []
+      for (const d of detail.slice(0, 8)) rows.push(Text({ dimColor: true, wrap: 'truncate-end', children: ['    ' + d] }))
+      if (detail.length > 8) rows.push(Text({ dimColor: true, children: ['    \u2026and ' + (detail.length - 8) + ' more'] }))
+    }
+
+    rows.push(Text({ children: [' '] }))
+    rows.push(Text({ bold: true, children: ["What Dragon's colors mean"] }))
+    for (const key of Object.keys(MOODS)) {
+      const m = MOODS[key]
+      rows.push(Text({ children: [Text({ color: m.color, children: ['  \u25cf ' + m.label.padEnd(20)] }), Text({ dimColor: true, children: [m.short] })] }))
+    }
+    rows.push(Text({ bold: true, children: ['What the light colors mean'] }))
+    for (const [color, text] of [
+      [COLORS.green, 'all clear / running / CoreAPI on local SQL Server'],
+      [COLORS.teal, 'CoreAPI on the Docker SQL container, or you have open PRs'],
+      [COLORS.unread, 'something is waiting for you (count shown)'],
+      [COLORS.amber, 'up, but something is unclear'],
+      [COLORS.red, 'down'],
+      [COLORS.grey, 'off, not set up, or not checked yet'],
+    ]) {
+      rows.push(Text({ children: [Text({ color, children: ['  \u25cf '] }), Text({ dimColor: true, children: [text] })] }))
+    }
+
+    rows.push(Text({ children: [' '] }))
+    rows.push(
+      Box({
+        flexDirection: 'row',
+        columnGap: 2,
+        children: [
+          Button({
+            key: 'drg-refresh',
+            label: 'r: Refresh all',
+            hotkey: 'r',
+            plain: true,
+            onPress: () => {
+              for (const id of ['coreapi', 'outlook', 'jira', 'bitbucket']) poll($, id, true)
+            },
+          }),
+          Button({
+            key: 'drg-suggest',
+            label: 's: Skill suggestions ' + (suggestionsOff ? 'OFF' : 'ON'),
+            hotkey: 's',
+            plain: true,
+            onPress: async () => {
+              suggestionsOff = !suggestionsOff
+              declined.clear()
+              await $.store.set('suggestions-off', suggestionsOff)
+              $.ui.invalidate('ui.render')
+            },
+          }),
+        ],
+      }),
+    )
+    return Box({ flexDirection: 'column', children: rows })
+  })
+}

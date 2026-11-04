@@ -1,0 +1,19 @@
+{
+  "name": "pet-dragon",
+  "version": "0.1.0",
+  "description": "Dragon, a little winged dragon, above your prompt: it changes color with the Claude session state, shows Jira / Bitbucket / Outlook / Teams / CoreAPI status lights, and offers related skills before you send a prompt.",
+  "author": { "name": "C3 team" },
+  "userConfig": {
+    "coreapi_port": { "type": "number", "title": "CoreAPI port", "description": "Local port CoreAPI listens on", "default": 5236, "min": 1, "max": 65535 },
+    "bff_port": { "type": "number", "title": "BFF port", "description": "Local port the BFF listens on (checked with CoreAPI)", "default": 7102, "min": 1, "max": 65535 },
+    "movedocs_port": { "type": "number", "title": "MoveDocs API port", "description": "Local port the MoveDocs API listens on (checked with CoreAPI)", "default": 7201, "min": 1, "max": 65535 },
+    "coreapi_poll_seconds": { "type": "number", "title": "Local API check interval (seconds)", "description": "How often to check CoreAPI (and its database), the BFF, and the MoveDocs API", "default": 30, "min": 10, "max": 3600 },
+    "messages_poll_seconds": { "type": "number", "title": "Mail/Teams check interval (seconds)", "description": "How often to check Outlook unread mail and whether Teams is running", "default": 60, "min": 15, "max": 3600 },
+    "jira_poll_minutes": { "type": "number", "title": "Jira check interval (minutes)", "description": "How often to count your open Jira issues", "default": 5, "min": 1, "max": 240 },
+    "bitbucket_poll_minutes": { "type": "number", "title": "Bitbucket check interval (minutes)", "description": "How often to count your open authored PRs", "default": 10, "min": 2, "max": 240 },
+    "jira_jql": { "type": "string", "title": "Jira JQL", "description": "Which issues the Jira light counts", "default": "assignee = currentUser() AND statusCategory != Done" },
+    "context_warn_percent": { "type": "number", "title": "Context warning (%)", "description": "Turn Dragon purple when the context window is this full", "default": 80, "min": 10, "max": 100 },
+    "skill_suggestions": { "type": "string", "title": "Skill suggestions", "description": "ask = offer related skills before a prompt is sent; off = never", "default": "ask", "options": ["ask", "off"] },
+    "skill_min_score": { "type": "number", "title": "Skill suggestion sensitivity", "description": "Lower suggests more often. A skill-name word match scores 3, a description word 1.", "default": 2, "min": 1, "max": 10 }
+  }
+}
