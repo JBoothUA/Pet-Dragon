@@ -318,6 +318,7 @@ export function register(on, options) {
       key: 'drg-dragon',
       flexDirection: 'column',
       width: SPRITE_WIDTH + 1,
+      hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>
         Text({
           key: 'drg-dragon-' + r,
@@ -373,7 +374,7 @@ export function register(on, options) {
     ]
     const hint = lastSuggestion
       ? 'Dragon suggests ' + lastSuggestion + ' for this prompt'
-      : 'hover Dragon or a light for details \u00b7 /dragon for more'
+      : 'Hover over Dragon or a light for details \u00b7 /dragon for more'
     const infoLine = Box({
       key: 'drg-info',
       position: 'relative',
