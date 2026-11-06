@@ -18,10 +18,10 @@ const CORE_UP_LOCAL = JSON.stringify({ up: true, pid: 4242, process: 'CoreAPI', 
 const MAIL = JSON.stringify({ outlook: 'on', outlookUnread: 3, teams: 'off' })
 const PORTS = JSON.stringify({ '7102': { up: true, pid: 77, process: 'BFF' }, '7201': { up: false } })
 const JIRA = JSON.stringify({ data: { issues: [{ key: 'C3-1', summary: 'Do a thing', status: { name: 'In Progress' } }] } })
-const PRS = JSON.stringify({ data: { pullRequests: [{ title: 'Fix it', author: { displayName: 'Sam' }, ageDays: 2 }] } })
+const PRS = JSON.stringify({ data: { pullRequests: [{ title: 'Fix it', author: { displayName: 'Sam' }, ageDays: 2, repo: { id: '7b33633431633438372d666438652d346565362d396133392d3461376330663439316230367d' } }, { title: 'Other repo', ageDays: 1, repo: { id: 'other' } }] } })
 
 // Everything session.start and the pollers need, answered in Claude Code's place
-function stubSession(on, asked: string[], answer: string) {
+function stubSession(on, asked: string[], answer: string, opened: string[] = []) {
   const clock = mock.clock(on)
   mock.store(on, {})
   mock.env(on, { OS: 'Windows_NT' })
@@ -36,7 +36,8 @@ function stubSession(on, asked: string[], answer: string) {
   on('process.run', ($, e) => {
     const argv = e.argv.join(' ')
     let stdout = ''
-    if (argv.includes('coreapi-probe')) stdout = CORE_UP_LOCAL
+    if (argv.includes('open-url')) opened.push(argv)
+    else if (argv.includes('coreapi-probe')) stdout = CORE_UP_LOCAL
     else if (argv.includes('ports-probe')) stdout = PORTS
     else if (argv.includes('messages-probe')) stdout = MAIL
     else if (argv.includes('jira')) stdout = JIRA
@@ -67,6 +68,20 @@ test('the band shows Dragon and every light after the first polls', async ($, on
   expect(await ui.find({ type: 'Text', text: /MoveDocs API: MoveDocs API is not running/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Outlook: 3 unread/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Your Bitbucket PRs: 1 open PR\(s\) you authored/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('pressing a light opens its URL through the open-url script', async ($, on) => {
+  const opened: string[] = []
+  const clock = stubSession(on, [], 'No thanks', opened)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+  await clock.advance(9_000)
+
+  const ui = await $.ui.mount(BAND)
+  await ui.press({ key: 'drg-light-coreapi' })
+  expect(opened.length).toBe(1)
+  expect(opened[0]).toMatch(/[\\/]scripts[\\/]open-url\.ps1/)
+  expect(opened[0]).toContain('http://localhost:5236/swagger')
   await ui.unmount()
 })
 

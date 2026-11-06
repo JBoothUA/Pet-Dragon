@@ -8,7 +8,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 $result = [ordered]@{
   up = $false; pid = $null; process = $null
   db = 'unknown'; dbEvidence = @(); dataSource = $null; dataSourceFrom = $null
-  sqlService = $null; dockerSql = $null
+  sqlService = $null; dockerSql = $null; repoRoot = $null; exePath = $null; startTime = $null
 }
 
 function Get-DataSource([string]$json) {
@@ -18,6 +18,23 @@ function Get-DataSource([string]$json) {
   if ($m.Success) { return $m.Groups[1].Value.Trim() }
   return $null
 }
+
+# The session may start in a subfolder (e.g. phoenix-ui), so walk up to the folder that holds core-api\CoreAPI
+function Find-RepoRoot([string]$start) {
+  $d = $start
+  while ($d -and -not (Test-Path (Join-Path $d 'core-api\CoreAPI'))) { $d = Split-Path $d -Parent }
+  return $d
+}
+$RepoRoot = Find-RepoRoot $RepoRoot
+if (-not $RepoRoot) {
+  # Session folder is outside the repo: use where the running CoreAPI's exe lives (bin\Debug\... under the repo)
+  $l = Get-NetTCPConnection -LocalPort $Port -State Listen | Select-Object -First 1
+  if ($l) {
+    $exe = (Get-Process -Id $l.OwningProcess).Path
+    if ($exe) { $RepoRoot = Find-RepoRoot (Split-Path $exe -Parent) }
+  }
+}
+$result.repoRoot = $RepoRoot
 
 # Config precedence (lowest -> highest): appsettings.json, appsettings.Development.json, user secrets, env var
 if ($RepoRoot) {
@@ -50,7 +67,10 @@ $listen = Get-NetTCPConnection -LocalPort $Port -State Listen | Select-Object -F
 if ($listen) {
   $result.up = $true
   $result.pid = $listen.OwningProcess
-  $result.process = (Get-Process -Id $listen.OwningProcess).ProcessName
+  $proc = Get-Process -Id $listen.OwningProcess
+  $result.process = $proc.ProcessName
+  $result.exePath = $proc.Path
+  $result.startTime = if ($proc.StartTime) { $proc.StartTime.ToString('HH:mm:ss') } else { $null }
 
   # Which process owns the SQL listener on 1433: sqlservr = local install, docker/wsl relay = container
   $sqlOwner = $null

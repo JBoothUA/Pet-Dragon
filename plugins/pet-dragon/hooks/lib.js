@@ -36,32 +36,36 @@ export function pickMood({ session, unread, contextPct, contextWarn }) {
 }
 
 // Fixed parts of the Dragon mascot; R (body) takes the mood color and S (wings) is a darker shade of it.
-export const PAL = { C: '#fff1d6', W: '#ffffff', k: '#111111', d: '#5c2b16', m: '#7a1010', o: '#111111', h: '#f2e6c9', s: '#ff9a3c' }
+export const PAL = { C: '#fff1d6', W: '#ffffff', k: '#111111', d: '#b5602c', m: '#7a1010', o: '#111111', h: '#f2e6c9', s: '#ff9a3c', p: '#ff9eb5' }
 
-// Dragon, a winged dragon, as pixel grids: R = body, S = wings, h = horns, s = tail plate,
-// C = cream belly, W/k = eye, m = mouth, d = feet, . = clear. A black outline is added around him
-// when the module loads. Two pixel rows make one terminal row (half-blocks).
-// Frame 2 (while Claude works) flaps the wings, lifts the tail, and steps the feet.
+// Dragon, a big-eyed baby dragon, as pixel grids: R = body, S = wings, h = horns,
+// C = cream belly, W/k = eye white and pupil, p = blush, m = smile, d = feet, . = clear.
+// 16x10 grids, no outline: near-black pixels vanish on a dark terminal and read as blank gaps.
+// Two pixel rows make one terminal row (half-blocks). Frame 2 (while Claude works) flaps the wings up.
 const BODY = [
   [
-    '.S.S....h..h....',
-    'SSSSS..RRRRR....',
-    '.SSSSRRRWWRRR...',
-    '..SSRRRRWkRRRRR.',
-    '...RRRRRRRRmmmm.',
-    'R..RRRRRCCCRR...',
-    'RRRRRRRCCCCRR...',
-    '.sRRRRRddRRdd...',
+    '...h........h...',
+    '...hh......hh...',
+    '...RRRRRRRRRR...',
+    'S.RRRRRRRRRRRR.S',
+    'SSRRWkRRRRWkRRSS',
+    'SSRRkkRRRRkkRRSS',
+    '.SRpRRRmmRRRpRS.',
+    '..RRRRCCCCRRRR..',
+    '...RRCCCCCCRR...',
+    '....dd....dd....',
   ],
   [
-    '....S...h..h....',
-    '..SSS..RRRRR....',
-    'SSSSSRRRWWRRR...',
-    '.SSSRRRRWkRRRRR.',
-    '..SRRRRRRRRmmmm.',
-    'RR.RRRRRCCCRR...',
-    '.RRRRRRRCCCCR...',
-    '..sRRRRRRddRRdd.',
+    'S..h........h..S',
+    'S..hh......hh..S',
+    'SS.RRRRRRRRRR.SS',
+    'SSRRRRRRRRRRRRSS',
+    '.SRRWkRRRRWkRRS.',
+    '..RRkkRRRRkkRR..',
+    '..RpRRRmmRRRpR..',
+    '..RRRRCCCCRRRR..',
+    '...RRCCCCCCRR...',
+    '....dd....dd....',
   ],
 ]
 // Pads the grid by one pixel and marks every clear pixel that touches the sprite as outline (o).
@@ -80,7 +84,7 @@ export function outline(grid) {
   return out
 }
 
-export const FRAMES = BODY.map(outline)
+export const FRAMES = BODY
 
 export const SPRITE_WIDTH = FRAMES[0][0].length
 
@@ -137,9 +141,15 @@ export function ago(ms, now) {
 
 export function coreApiLight(p, port) {
   if (!p) return { color: COLORS.grey, value: '?', short: 'CoreAPI probe failed to run', detail: [] }
-  const detail = []
+  const detail = ['Swagger: http://localhost:' + port + '/swagger']
+  if (p.up) {
+    detail.push('Process: ' + (p.process ?? '?') + ' pid ' + p.pid + (p.startTime ? ', started ' + p.startTime : ''))
+    if (p.exePath) detail.push('Exe: ' + p.exePath)
+  }
+  detail.push('Repo root: ' + (p.repoRoot || 'not found (config could not be read)'))
   if (p.dataSource) detail.push('Data Source=' + p.dataSource + ' (from ' + p.dataSourceFrom + ')')
-  if (p.sqlService) detail.push('MSSQLSERVER service: ' + p.sqlService)
+  else detail.push('Data Source: not found in appsettings, user secrets or env')
+  detail.push('MSSQLSERVER service: ' + (p.sqlService ?? 'not installed'))
   detail.push('Docker SQL container: ' + (p.dockerSql === 'daemon-off' ? 'Docker not running' : p.dockerSql || 'none'))
   for (const ev of p.dbEvidence ?? []) detail.push('evidence: ' + ev)
   if (!p.up) return { color: COLORS.red, value: 'down', short: 'CoreAPI is not listening on :' + port, detail }
@@ -152,8 +162,10 @@ export function coreApiLight(p, port) {
 
 export function serviceLight(name, p, port) {
   if (!p) return { color: COLORS.grey, value: '?', short: name + ' probe failed to run', detail: [] }
-  if (!p.up) return { color: COLORS.grey, value: 'off', short: name + ' is not running (nothing on :' + port + ')', detail: [] }
-  return { color: COLORS.green, value: 'up', short: name + ' is running on :' + port + ' (' + (p.process ?? 'process') + ' pid ' + p.pid + ')', detail: [] }
+  const detail = ['Swagger: https://localhost:' + port + '/swagger']
+  if (!p.up) return { color: COLORS.grey, value: 'off', short: name + ' is not running (nothing on :' + port + ')', detail }
+  detail.push('Process: ' + (p.process ?? '?') + ' pid ' + p.pid)
+  return { color: COLORS.green, value: 'up', short: name + ' is running on :' + port + ' (' + (p.process ?? 'process') + ' pid ' + p.pid + ')', detail }
 }
 
 export function jiraLight(json) {
@@ -165,11 +177,18 @@ export function jiraLight(json) {
   return { color: issues.length ? COLORS.unread : COLORS.green, value: String(issues.length), short, detail }
 }
 
-export function prLight(json) {
-  const prs = json?.data?.pullRequests
-  if (!Array.isArray(prs)) return { color: COLORS.grey, value: '?', short: 'Could not read Bitbucket PRs (is twg logged in?)', detail: [] }
-  const detail = prs.map((p) => p.title + ' (' + (p.ageDays ?? '?') + 'd, ' + (p.commentCount ?? 0) + ' comments)')
-  const short = prs.length ? prs.length + ' open PR(s) you authored' : 'You have no open PRs'
+// repoId: only PRs in that Bitbucket repo are counted (twg returns every repo you authored in); empty counts all.
+export function prLight(json, repoId) {
+  const all = json?.data?.pullRequests
+  if (!Array.isArray(all)) return { color: COLORS.grey, value: '?', short: 'Could not read Bitbucket PRs (is twg logged in?)', detail: [] }
+  const prs = repoId ? all.filter((p) => p.repo?.id === repoId) : all
+  const others = all.length - prs.length
+  const detail = prs.map((p) => {
+    const reviewers = Array.isArray(p.reviewers) ? p.reviewers.length : 0
+    return p.title + ' (' + (p.ageDays ?? '?') + 'd, ' + (p.commentCount ?? 0) + ' comments, ' + reviewers + ' reviewer(s), ' + (p.sourceBranch ?? '?') + ' → ' + (p.destinationBranch ?? '?') + ')'
+  })
+  if (others > 0) detail.push(others + ' more open PR(s) in other repos are not counted')
+  const short = prs.length ? prs.length + ' open PR(s) you authored in phoenix' : 'You have no open PRs in phoenix'
   return { color: prs.length ? COLORS.teal : COLORS.green, value: String(prs.length), short, detail }
 }
 

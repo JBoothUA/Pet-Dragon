@@ -32,6 +32,10 @@ const DEFAULTS = {
   context_warn_percent: 80,
   skill_suggestions: 'ask',
   skill_min_score: 2,
+  // twg returns PRs from every repo you authored in; only this one (phoenix) is counted
+  pr_repo_id: '7b33633431633438372d666438652d346565362d396133392d3461376330663439316230367d',
+  pr_list_url: 'https://bitbucket.org/keyhealthtech/phoenix/pull-requests/?state=ALL&user_filter=ALL&author=712020%3Ad474c235-c75d-4715-a77f-8c84fae88106',
+  jira_board_url: 'https://keyjira.atlassian.net/jira/software/c/projects/C3/boards/880?assignee=712020%3Ad474c235-c75d-4715-a77f-8c84fae88106',
 }
 
 // row 0 = local services, row 1 = work. A companion light is checked by its parent's probe.
@@ -73,6 +77,27 @@ function unreadCount() {
 
 function setLight(id, light, checkedAt) {
   lights[id] = { ...light, checkedAt }
+}
+
+// Where clicking a light goes (opened in Chrome); undefined = open the /dragon pane instead
+function lightUrl(id) {
+  if (id === 'coreapi') return 'http://localhost:' + opts.coreapi_port + '/swagger'
+  if (id === 'bff') return 'https://localhost:' + opts.bff_port + '/swagger'
+  if (id === 'movedocs') return 'https://localhost:' + opts.movedocs_port + '/swagger'
+  if (id === 'jira') return opts.jira_board_url
+  if (id === 'bitbucket') return opts.pr_list_url
+  return undefined
+}
+
+async function openUrl($, url) {
+  try {
+    await $.process.run(
+      ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $.plugin.root + '\\scripts\\open-url.ps1', '-Url', url],
+      { timeoutMs: 15_000 },
+    )
+  } catch (err) {
+    $.ui.toast('Dragon could not open ' + url + ': ' + shorten(err?.message ?? err, 80))
+  }
 }
 
 async function runPowerShell($, script, args) {
@@ -128,7 +153,7 @@ async function poll($, id, force) {
         ['twg', 'prs', 'query', '--scope', 'me', '--role', 'author', '--state', 'open', '-o', 'json', '--output-summary', 'none'],
         { timeoutMs: 180_000 },
       )
-      setLight(key, prLight(parseJson(r.stdout)), now)
+      setLight(key, prLight(parseJson(r.stdout), opts.pr_repo_id), now)
     }
     if (lights[key]) await $.store.set('light:' + key, lights[key])
     for (const c of companions(key)) if (lights[c]) await $.store.set('light:' + c, lights[c])
@@ -309,7 +334,7 @@ export function register(on, options) {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props?.hasSurvey) return next(e)
-    const { Box, Text } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, (e.props?.bodyColumns ?? 80) - SPRITE_WIDTH - 2)
     const mood = moodNow()
     const f = FRAMES[frame] ?? FRAMES[0]
@@ -349,9 +374,15 @@ export function register(on, options) {
           ...SOURCES.filter((s) => s.row === row).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
-            return Text({
+            return Button({
               key: 'drg-light-' + s.id,
-              hover: { scope: 'drg-' + s.id, backgroundColor: '#333333' },
+              plain: true,
+              hover: { scope: 'drg-' + s.id, underline: true },
+              onPress: () => {
+                const url = lightUrl(s.id)
+                if (url) openUrl($, url)
+                else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })
+              },
               children: [
                 Text({ color, children: ['\u25cf '] }),
                 Text({ children: [s.label + ' '] }),
@@ -366,10 +397,11 @@ export function register(on, options) {
     const pad = (t) => shorten(t, width).padEnd(width, ' ')
     const now = Date.now()
     const reveals = [
-      { scope: 'drg-mood', text: mood.label + ': ' + mood.short },
+      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Session: ' + session.state + (session.tool ? ' (' + session.tool + ')' : '') + (typeof session.contextPct === 'number' ? '  ·  context ' + Math.round(session.contextPct) + '% (warns at ' + opts.context_warn_percent + '%)' : '') + '  ·  unread mail: ' + unreadCount() },
       ...SOURCES.map((s) => ({
         scope: 'drg-' + s.id,
         text: s.title + ': ' + (lights[s.id]?.short ?? 'checking\u2026') + (lights[s.id] ? '  (' + ago(lights[s.id].checkedAt, now) + ')' : ''),
+        more: (lights[s.id]?.detail ?? []).join('  ·  ') || (lightUrl(s.id) ? 'Click to open ' + lightUrl(s.id) : 'Click for the full /dragon report'),
       })),
     ]
     const hint = lastSuggestion
@@ -388,7 +420,7 @@ export function register(on, options) {
             left: 0,
             display: 'none',
             hover: { display: 'flex', scope: r.scope },
-            children: [Text({ color: COLORS.ember, children: [pad(r.text)] })],
+            children: [Text({ color: COLORS.ember, children: [pad(r.text + (r.more ? '  ·  ' + r.more : ''))] })],
           }),
         ),
       ],
@@ -399,7 +431,10 @@ export function register(on, options) {
       flexDirection: 'row',
       children: [dragon, Box({ flexDirection: 'column', children: [caption, lightRow(0), lightRow(1), infoLine] })],
     })
-    const theirs = await next(e)
+    // Another mod's band draws beneath Dragon. Claude Code's own placeholder
+    // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
+    const drawn = await Promise.resolve(next(e)).catch(() => null)
+    const theirs = drawn && typeof drawn === 'object' && drawn.type !== 'engine' ? drawn : null
     return theirs ? Box({ flexDirection: 'column', children: [mine, theirs] }) : mine
   })
 
