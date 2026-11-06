@@ -10,7 +10,7 @@ Dragon is a little winged dragon who lives above your Claude Code prompt. Its co
    ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
 ```
 
-Dragon is a 16x10 pixel big-eyed baby sprite with a black outline, drawn with half-block characters, so it needs a terminal with 24-bit color (Windows Terminal, VS Code, iTerm2). Its body takes the mood color below; the wings are a darker shade, and the horns, cream belly, eyes, blush, and brown feet stay the same. Run `npm run preview` in this repo to see every mood in real terminal colors, or `npm run preview:animate` for the working animation.
+Dragon is a 16x12 pixel front-facing dragon sprite, drawn with half-block characters, so it needs a terminal with 24-bit color (Windows Terminal, VS Code, iTerm2). Its body takes the mood color below; the wings are a darker shade, and the horns and crest, cream belly, eyes, nostrils, and brown feet stay the same. Run `npm run preview` in this repo to see every mood in real terminal colors, or `npm run preview:animate` for the working animation.
 
 ![Every mood](docs/screenshots/moods.png)
 

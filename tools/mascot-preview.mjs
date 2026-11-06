@@ -1,7 +1,7 @@
 // Draws Dragon in every mood color, in real terminal colors, from the plugin's own frames.
-//   node tools/mascot-preview.mjs            every mood (working moods show frame 2)
+//   node tools/mascot-preview.mjs            every mood (working moods show the downstroke)
 //   node tools/mascot-preview.mjs --animate  the working animation for a few seconds
-import { FRAMES, MOODS, SPRITE_WIDTH, spriteRows } from '../plugins/pet-dragon/hooks/lib.js'
+import { IDLE, FLAP, FLAP_MS, MOODS, SPRITE_WIDTH, spriteRows } from '../plugins/pet-dragon/hooks/lib.js'
 
 const RESET = '\x1b[0m'
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(';')
@@ -22,7 +22,7 @@ function printAll() {
     const group = entries.slice(start, start + 4)
     console.log('')
     console.log('  ' + group.map(([, m]) => '\x1b[1m\x1b[38;2;' + rgb(m.color) + 'm' + m.label.padEnd(COL) + RESET).join(''))
-    const blocks = group.map(([key, m]) => draw(FRAMES[key === 'working' || key === 'tool' ? 1 : 0], m.color))
+    const blocks = group.map(([key, m]) => draw(key === 'working' || key === 'tool' ? FLAP[2] : IDLE, m.color))
     for (let r = 0; r < blocks[0].length; r++) {
       console.log('  ' + blocks.map((b) => b[r] + ' '.repeat(COL - SPRITE_WIDTH)).join(''))
     }
@@ -32,12 +32,12 @@ function printAll() {
 
 async function animate() {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-  const h = FRAMES[0].length / 2
+  const h = IDLE.length / 2
   process.stdout.write('\n'.repeat(h))
-  for (let t = 0; t < 20; t++) {
+  for (let t = 0; t < 40; t++) {
     process.stdout.write(`\x1b[${h}A`)
-    for (const line of draw(FRAMES[t % 2], MOODS.working.color)) process.stdout.write('\x1b[2K  ' + line + '\n')
-    await sleep(450)
+    for (const line of draw(FLAP[t % FLAP.length], MOODS.working.color)) process.stdout.write('\x1b[2K  ' + line + '\n')
+    await sleep(FLAP_MS)
   }
 }
 

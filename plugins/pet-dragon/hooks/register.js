@@ -1,7 +1,9 @@
 import {
   COLORS,
   MOODS,
-  FRAMES,
+  IDLE,
+  FLAP,
+  FLAP_MS,
   SPRITE_WIDTH,
   spriteRows,
   pickMood,
@@ -16,6 +18,7 @@ import {
   indexSkills,
   suggestSkills,
   shorten,
+  wrapLines,
 } from './lib.js'
 
 const PANE = 'dragon'
@@ -44,7 +47,7 @@ const SOURCES = [
   { id: 'bff', label: 'BFF', title: 'BFF', row: 0, parent: 'coreapi' },
   { id: 'movedocs', label: 'MD', title: 'MoveDocs API', row: 0, parent: 'coreapi' },
   { id: 'jira', label: 'Jira', title: 'Jira', row: 1 },
-  { id: 'bitbucket', label: 'PRs', title: 'Your Bitbucket PRs', row: 1 },
+  { id: 'bitbucket', label: 'PRs', title: 'PRs', row: 1 },
   { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1 },
   { id: 'teams', label: 'Teams', title: 'Teams', row: 1, parent: 'outlook' },
 ]
@@ -53,7 +56,9 @@ const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s
 let opts = { ...DEFAULTS }
 let repoRoot = ''
 let isWindows = true
-const session = { state: 'idle', tool: '', contextPct: undefined }
+const session = { state: 'idle', tool: '', contextPct: undefined, typing: false }
+const TYPING_HOLD_MS = 1500
+let typingTimer = null
 const lights = {}
 const busy = {}
 let frame = 0
@@ -183,13 +188,12 @@ async function loadSkills($) {
   }
 }
 
-function setState($, state, tool) {
-  session.state = state
-  session.tool = tool ?? ''
-  if (state === 'working' || state === 'tool') {
+function syncFlap($) {
+  const flapping = session.state === 'working' || session.state === 'tool' || session.typing
+  if (flapping) {
     if (!flapTimer) {
-      flapTimer = $.clock.every(450, () => {
-        frame = (frame + 1) % FRAMES.length
+      flapTimer = $.clock.every(FLAP_MS, () => {
+        frame = (frame + 1) % FLAP.length
         $.ui.invalidate('ui.render')
       })
     }
@@ -201,9 +205,31 @@ function setState($, state, tool) {
   $.ui.invalidate('ui.render')
 }
 
+function setState($, state, tool) {
+  session.state = state
+  session.tool = tool ?? ''
+  syncFlap($)
+}
+
+// Any change to the prompt box (a keystroke, or dictated text landing) counts as typing for a moment
+function noteTyping($, typing) {
+  typingTimer?.cancel()
+  typingTimer = null
+  session.typing = typing
+  if (typing) {
+    typingTimer = $.clock.after(TYPING_HOLD_MS, () => {
+      typingTimer = null
+      session.typing = false
+      syncFlap($)
+    })
+  }
+  syncFlap($)
+}
+
 function moodNow() {
   const key = pickMood({
     session: session.state,
+    typing: session.typing,
     unread: unreadCount(),
     contextPct: session.contextPct,
     contextWarn: Number(opts.context_warn_percent),
@@ -245,6 +271,12 @@ export function register(on, options) {
     $.clock.every(10 * 60_000, () => loadSkills($))
     return result
   })
+
+  on('prompt.change', async ($, e, next) => {
+    // A submit or clear empties the box: that is the end of typing, not more of it
+    noteTyping($, e.origin?.kind !== 'clear')
+    return next(e)
+  }).catch(failOpen)
 
   on('turn.start', async ($, e, next) => {
     if (!e.agentId) setState($, 'working')
@@ -337,7 +369,7 @@ export function register(on, options) {
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, (e.props?.bodyColumns ?? 80) - SPRITE_WIDTH - 2)
     const mood = moodNow()
-    const f = FRAMES[frame] ?? FRAMES[0]
+    const f = flapTimer ? FLAP[frame] : IDLE
 
     const dragon = Box({
       key: 'drg-dragon',
@@ -394,15 +426,19 @@ export function register(on, options) {
       })
 
     // Hover line: a hint by default; the hovered item's explanation is drawn over it
-    const pad = (t) => shorten(t, width).padEnd(width, ' ')
     const now = Date.now()
     const reveals = [
-      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Session: ' + session.state + (session.tool ? ' (' + session.tool + ')' : '') + (typeof session.contextPct === 'number' ? '  ·  context ' + Math.round(session.contextPct) + '% (warns at ' + opts.context_warn_percent + '%)' : '') + '  ·  unread mail: ' + unreadCount() },
-      ...SOURCES.map((s) => ({
-        scope: 'drg-' + s.id,
-        text: s.title + ': ' + (lights[s.id]?.short ?? 'checking\u2026') + (lights[s.id] ? '  (' + ago(lights[s.id].checkedAt, now) + ')' : ''),
-        more: (lights[s.id]?.detail ?? []).join('  ·  ') || (lightUrl(s.id) ? 'Click to open ' + lightUrl(s.id) : 'Click for the full /dragon report'),
-      })),
+      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: '' },
+      ...SOURCES.map((s) => {
+        const l = lights[s.id]
+        // Jira and PRs list just the ticket and its status; the count is already on the light
+        if (l?.brief?.length) return { scope: 'drg-' + s.id, text: s.title + ': ' + l.brief.join('  ·  '), more: '' }
+        return {
+          scope: 'drg-' + s.id,
+          text: s.title + ': ' + (l?.short ?? 'checking…') + (l ? '  (' + ago(l.checkedAt, now) + ')' : ''),
+          more: lightUrl(s.id) ? 'Click to open' : 'Click for /dragon report',
+        }
+      }),
     ]
     const hint = lastSuggestion
       ? 'Dragon suggests ' + lastSuggestion + ' for this prompt'
@@ -410,8 +446,12 @@ export function register(on, options) {
     const infoLine = Box({
       key: 'drg-info',
       position: 'relative',
+      flexDirection: 'column',
+      height: 2,
       children: [
-        lastSuggestion ? Text({ color: COLORS.ember, children: [pad(hint)] }) : Text({ dimColor: true, children: [pad(hint)] }),
+        ...wrapLines(hint, width, 2).map((l, i) =>
+          Text({ key: 'drg-hint-' + i, color: lastSuggestion ? COLORS.ember : undefined, dimColor: !lastSuggestion, children: [l] }),
+        ),
         ...reveals.map((r) =>
           Box({
             key: 'drg-reveal-' + r.scope,
@@ -419,8 +459,11 @@ export function register(on, options) {
             top: 0,
             left: 0,
             display: 'none',
+            flexDirection: 'column',
             hover: { display: 'flex', scope: r.scope },
-            children: [Text({ color: COLORS.ember, children: [pad(r.text + (r.more ? '  ·  ' + r.more : ''))] })],
+            children: wrapLines(r.text + (r.more ? '  ·  ' + r.more : ''), width, 2).map((l, i) =>
+              Text({ key: 'drg-reveal-' + r.scope + '-' + i, color: COLORS.ember, children: [l] }),
+            ),
           }),
         ),
       ],

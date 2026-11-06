@@ -10,6 +10,7 @@ export const COLORS = {
   error: '#9a9a9a',
   unread: '#4da3ff',
   context: '#b388ff',
+  typing: '#c6ff3d',
   green: '#3ddc84',
   teal: '#1de9b6',
   amber: '#ffc107',
@@ -23,51 +24,59 @@ export const MOODS = {
   error: { color: COLORS.error, label: 'Hit an error', short: 'The last turn ended with an API error' },
   tool: { color: COLORS.tool, label: 'Using a tool', short: 'Claude is running a tool' },
   working: { color: COLORS.working, label: 'Thinking', short: 'Claude is working on your request' },
+  typing: { color: COLORS.typing, label: 'Listening to you', short: 'You are typing or dictating a prompt' },
   unread: { color: COLORS.unread, label: 'Unread messages', short: 'You have unread Outlook mail' },
   context: { color: COLORS.context, label: 'Context filling up', short: 'Context window is over the threshold; consider /compact' },
   idle: { color: COLORS.idle, label: 'Ready', short: 'Idle and waiting for your next prompt' },
 }
 
-export function pickMood({ session, unread, contextPct, contextWarn }) {
+export function pickMood({ session, typing, unread, contextPct, contextWarn }) {
   if (session === 'waiting' || session === 'error' || session === 'tool' || session === 'working') return session
+  if (typing) return 'typing'
   if (unread > 0) return 'unread'
   if (typeof contextPct === 'number' && contextPct >= contextWarn) return 'context'
   return 'idle'
 }
 
 // Fixed parts of the Dragon mascot; R (body) takes the mood color and S (wings) is a darker shade of it.
-export const PAL = { C: '#fff1d6', W: '#ffffff', k: '#111111', d: '#b5602c', m: '#7a1010', o: '#111111', h: '#f2e6c9', s: '#ff9a3c', p: '#ff9eb5' }
+export const PAL = { C: '#fff1d6', W: '#ffffff', k: '#111111', d: '#b5602c', m: '#7a1010', o: '#111111', h: '#f2e6c9', s: '#ff9a3c', p: '#ff9eb5', n: '#111111' }
 
-// Dragon, a big-eyed baby dragon, as pixel grids: R = body, S = wings, h = horns,
-// C = cream belly, W/k = eye white and pupil, p = blush, m = smile, d = feet, . = clear.
-// 16x10 grids, no outline: near-black pixels vanish on a dark terminal and read as blank gaps.
-// Two pixel rows make one terminal row (half-blocks). Frame 2 (while Claude works) flaps the wings up.
-const BODY = [
-  [
-    '...h........h...',
-    '...hh......hh...',
-    '...RRRRRRRRRR...',
-    'S.RRRRRRRRRRRR.S',
-    'SSRRWkRRRRWkRRSS',
-    'SSRRkkRRRRkkRRSS',
-    '.SRpRRRmmRRRpRS.',
-    '..RRRRCCCCRRRR..',
-    '...RRCCCCCCRR...',
-    '....dd....dd....',
-  ],
-  [
-    'S..h........h..S',
-    'S..hh......hh..S',
-    'SS.RRRRRRRRRR.SS',
-    'SSRRRRRRRRRRRRSS',
-    '.SRRWkRRRRWkRRS.',
-    '..RRkkRRRRkkRR..',
-    '..RpRRRmmRRRpR..',
-    '..RRRRCCCCRRRR..',
-    '...RRCCCCCCRR...',
-    '....dd....dd....',
-  ],
+// Dragon, front view, as pixel grids: R = body, S = wings, h = horns and crest,
+// C = cream belly, W/k = eye white and pupil, n = nostril, m = mouth, d = feet, . = clear.
+// 16x12 grids, no outline: near-black pixels vanish on a dark terminal and read as blank gaps.
+// Two pixel rows make one terminal row (half-blocks). The spare row lets the body bob a pixel.
+// MIDDLE is the body without wings (cols 4-11); each wing pose is the left wing's four columns per row.
+const MIDDLE = [
+  'h..hh..h',
+  'hhRRRRhh',
+  'RRRRRRRR',
+  'RWkRRWkR',
+  'RRRRRRRR',
+  '.RnRRnR.',
+  '..RmmR..',
+  '.RRCCRR.',
+  '.RRCCRR.',
+  '.RCCCCR.',
+  '.dd..dd.',
 ]
+const WING_UP = ['S...', 'SS..', 'SSS.', '.SSS', '..SS', '...S', '....', '....', '....', '....', '....']
+const WING_LEVEL = ['....', '....', '....', 'S...', 'SSS.', 'SSSS', '.SSS', '..SS', '...S', '....', '....']
+const WING_DOWN = ['....', '....', '....', '....', '....', '....', '...S', '.SSS', 'SSSS', 'SSS.', 'SS..']
+
+const mirror = (s) => [...s].reverse().join('')
+
+// lifted = body one pixel row higher (the downstroke), otherwise one row lower
+function pose(wing, lifted) {
+  const rows = MIDDLE.map((m, y) => wing[y] + m + mirror(wing[y]))
+  const blank = '.'.repeat(rows[0].length)
+  return lifted ? [...rows, blank] : [blank, ...rows]
+}
+
+// Resting pose, and the flap cycle while Claude works: the body rises as the wings come down.
+export const IDLE = pose(WING_LEVEL, false)
+export const FLAP = [pose(WING_UP, false), pose(WING_LEVEL, false), pose(WING_DOWN, true), pose(WING_LEVEL, true)]
+export const FLAP_MS = 200
+
 // Pads the grid by one pixel and marks every clear pixel that touches the sprite as outline (o).
 export function outline(grid) {
   const at = (y, x) => grid[y - 1]?.[x - 1] ?? '.'
@@ -84,9 +93,7 @@ export function outline(grid) {
   return out
 }
 
-export const FRAMES = BODY
-
-export const SPRITE_WIDTH = FRAMES[0][0].length
+export const SPRITE_WIDTH = IDLE[0].length
 
 export function shade(hex, f = 0.7) {
   return '#' + [1, 3, 5].map((i) => Math.round(parseInt(hex.slice(i, i + 2), 16) * f).toString(16).padStart(2, '0')).join('')
@@ -172,9 +179,10 @@ export function jiraLight(json) {
   const issues = json?.data?.issues
   if (!Array.isArray(issues)) return { color: COLORS.grey, value: '?', short: 'Could not read Jira (is twg logged in?)', detail: [] }
   const detail = issues.map((i) => i.key + '  ' + (i.status?.name ?? '') + '  ' + (i.summary ?? ''))
+  const brief = issues.map((i) => i.key + ' ' + (i.status?.name ?? '?'))
   const inReview = issues.filter((i) => /review/i.test(i.status?.name ?? '')).length
   const short = issues.length + ' open issue(s) assigned to you' + (inReview ? ', ' + inReview + ' in review' : '')
-  return { color: issues.length ? COLORS.unread : COLORS.green, value: String(issues.length), short, detail }
+  return { color: issues.length ? COLORS.unread : COLORS.green, value: String(issues.length), short, detail, brief }
 }
 
 // repoId: only PRs in that Bitbucket repo are counted (twg returns every repo you authored in); empty counts all.
@@ -188,8 +196,12 @@ export function prLight(json, repoId) {
     return p.title + ' (' + (p.ageDays ?? '?') + 'd, ' + (p.commentCount ?? 0) + ' comments, ' + reviewers + ' reviewer(s), ' + (p.sourceBranch ?? '?') + ' → ' + (p.destinationBranch ?? '?') + ')'
   })
   if (others > 0) detail.push(others + ' more open PR(s) in other repos are not counted')
+  const brief = prs.map((p) => {
+    // The title starts with the ticket number; reviews are what moves a PR, so the status is its comment count
+    return String(p.title ?? '').slice(0, 8).trim() + ' ' + (p.commentCount ?? 0) + 'c'
+  })
   const short = prs.length ? prs.length + ' open PR(s) you authored in phoenix' : 'You have no open PRs in phoenix'
-  return { color: prs.length ? COLORS.teal : COLORS.green, value: String(prs.length), short, detail }
+  return { color: prs.length ? COLORS.teal : COLORS.green, value: String(prs.length), short, detail, brief }
 }
 
 export function outlookLight(m) {
@@ -278,6 +290,27 @@ export function suggestSkills(prompt, skills, { max = 2, minScore = 2, exclude =
   }
   scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
   return scored.slice(0, max)
+}
+
+// Greedy word wrap into at most `maxLines` lines, each padded to `width`; the last is ellipsized if text remains.
+export function wrapLines(text, width, maxLines = 2) {
+  const words = String(text ?? '').replace(/\s+/g, ' ').trim().split(' ')
+  const lines = []
+  let cur = ''
+  for (const w of words) {
+    const word = w.length > width ? w.slice(0, width - 1) + '…' : w
+    if (!cur) cur = word
+    else if (cur.length + 1 + word.length <= width) cur += ' ' + word
+    else {
+      lines.push(cur)
+      cur = word
+    }
+  }
+  if (cur) lines.push(cur)
+  const out = lines.slice(0, maxLines)
+  if (lines.length > maxLines) out[maxLines - 1] = shorten(out[maxLines - 1] + ' …', width)
+  while (out.length < maxLines) out.push('')
+  return out.map((l) => l.padEnd(width, ' '))
 }
 
 export function shorten(text, n) {

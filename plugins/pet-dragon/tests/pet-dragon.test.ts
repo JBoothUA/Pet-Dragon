@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { MOODS, pickMood } from '../hooks/lib.js'
 
 const BAND = {
   plugin: 'pet-dragon',
@@ -67,7 +68,9 @@ test('the band shows Dragon and every light after the first polls', async ($, on
   expect(await ui.find({ type: 'Text', text: /BFF: BFF is running on :7102/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /MoveDocs API: MoveDocs API is not running/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Outlook: 3 unread/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Your Bitbucket PRs: 1 open PR\(s\) you authored/ })).toBeDefined()
+  // PR and Jira hovers list just the ticket and its status
+  expect(await ui.find({ type: 'Text', text: /PRs: Fix it 0c/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Jira: C3-1 In Progress/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -115,4 +118,18 @@ test('slash commands and unrelated prompts are never interrupted', async ($, on)
   await $.prompt.submit({ text: '/c3-pr-workflow', command: 'c3-pr-workflow', origin: { kind: 'composer' } })
   await $.prompt.submit({ text: 'what time is it in Denver right now', origin: { kind: 'composer' } })
   expect(asked.length).toBe(0)
+})
+
+test('typing turns Dragon lime unless Claude is busy or needs you', () => {
+  const base = { unread: 3, contextPct: 95, contextWarn: 80 }
+  // Typing beats the quieter moods (unread, context, idle)
+  expect(pickMood({ ...base, session: 'idle', typing: true })).toBe('typing')
+  expect(pickMood({ ...base, session: 'idle', typing: false })).toBe('unread')
+  // Claude working, using a tool, waiting on you, or erroring still wins
+  for (const session of ['working', 'tool', 'waiting', 'error']) {
+    expect(pickMood({ ...base, session, typing: true })).toBe(session)
+  }
+  // A caller that never passes typing keeps the old behavior
+  expect(pickMood({ session: 'idle', unread: 0, contextPct: 10, contextWarn: 80 })).toBe('idle')
+  expect(MOODS.typing.label).toBe('Listening to you')
 })

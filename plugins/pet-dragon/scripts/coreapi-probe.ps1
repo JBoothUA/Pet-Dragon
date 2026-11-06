@@ -73,9 +73,11 @@ if ($listen) {
   $result.startTime = if ($proc.StartTime) { $proc.StartTime.ToString('HH:mm:ss') } else { $null }
 
   # Which process owns the SQL listener on 1433: sqlservr = local install, docker/wsl relay = container
+  # Docker Desktop shows as two listeners (wslrelay + com.docker.backend), so look at every owner, not the first
   $sqlOwner = $null
-  $sqlListen = Get-NetTCPConnection -LocalPort 1433 -State Listen | Select-Object -First 1
-  if ($sqlListen) { $sqlOwner = (Get-Process -Id $sqlListen.OwningProcess).ProcessName }
+  $owners = @(Get-NetTCPConnection -LocalPort 1433 -State Listen | ForEach-Object { (Get-Process -Id $_.OwningProcess).ProcessName } | Select-Object -Unique)
+  if ($owners -contains 'sqlservr') { $sqlOwner = 'sqlservr' }
+  elseif ($owners.Count -gt 0) { $sqlOwner = $owners -join ',' }
 
   $conns = @(Get-NetTCPConnection -OwningProcess $listen.OwningProcess -State Established | Where-Object RemotePort -eq 1433)
   if ($conns.Count -gt 0) {
@@ -83,6 +85,12 @@ if ($listen) {
     if ($sqlOwner -match '^sqlservr$') { $result.db = 'local'; $result.dbEvidence += 'port 1433 is owned by sqlservr' }
     elseif ($sqlOwner -match 'docker|wslrelay|vpnkit') { $result.db = 'docker'; $result.dbEvidence += "port 1433 is owned by $sqlOwner" }
     elseif ("$($conns[0].RemoteAddress)" -notmatch '^(127\.|::1|0\.0\.0\.0)') { $result.db = 'remote'; $result.dbEvidence += "remote $($conns[0].RemoteAddress)" }
+  }
+
+  # An explicit port (".,1433") means TCP even to this machine, so the listener's owner is the answer with no open connection
+  if ($result.db -eq 'unknown' -and $sqlOwner -and "$($result.dataSource)" -match ',1433$') {
+    if ($sqlOwner -match '^sqlservr$') { $result.db = 'local'; $result.dbEvidence += 'port 1433 is owned by sqlservr' }
+    elseif ($sqlOwner -match 'docker|wslrelay|vpnkit') { $result.db = 'docker'; $result.dbEvidence += "port 1433 is owned by $sqlOwner" }
   }
 
   if ($result.db -eq 'unknown') {
