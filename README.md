@@ -5,14 +5,6 @@
 
 Dragon is a little winged dragon who lives above your Claude Code prompt. Its color shows what the session is doing. Next to it, status lights show Jira, Bitbucket, Outlook, Teams, your local CoreAPI, and your repo (git, pipelines, tests, Seq errors). Before you send a prompt, it can offer C3 skills that fit the task, and `/dragon standup` writes your standup.
 
-```
-   ▄▀▄▀▄  ▄▀▄▄▀▄       ● Thinking — Claude is working on your request  ctx 12%
-  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄▄     APIs  ● Core local db  ● BFF up  ● MD off
-   ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀    Work  ● Jira 4  ● PRs 8  ● Mail 1  ● Teams running
-  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀     Repo  ● Git 2~ ↑1  ● CI passed  ● Tests 41 pass  ● Seq 0
-   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀       hover Dragon or a light for details · /dragon for more
-```
-
 Dragon is a 16x12 pixel front-facing dragon sprite, drawn with half-block characters, so it needs a terminal with 24-bit color (Windows Terminal, VS Code, iTerm2). Its body takes the mood color below; the wings are a darker shade, and the horns and crest, cream belly, eyes, nostrils, and brown feet stay the same. Run `npm run preview` in this repo to see every mood in real terminal colors, or `npm run preview:animate` for the working animation.
 
 ![Every mood](docs/screenshots/moods.png)
