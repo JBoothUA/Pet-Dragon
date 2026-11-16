@@ -10,7 +10,13 @@ import {
   jiraLight,
   prLight,
   seqLight,
-  insightsLight,
+  radarLight,
+  reviewLight,
+  mergedLight,
+  shipLight,
+  driftLight,
+  newestRelease,
+  ticketsIn,
   parseTestRun,
   isTestCommand,
   testLight,
@@ -217,7 +223,7 @@ test('/dragon standup gathers Jira, PRs and commits', async ($, on) => {
 
   const out = await $.command.run({ command: 'dragon', args: 'standup' })
   expect(out.text).toContain('Standup since')
-  expect(out.text).toContain('C3-1  [In Progress]  Do a thing')
+  expect(out.text).toContain('C3-1  In Progress  Do a thing')
   expect(out.text).toContain('Fix it')
   expect(out.text).not.toContain('Other repo')
   expect(out.text).toContain('abc1234 C3-1 Fix the thing')
@@ -234,7 +240,7 @@ test('pressing the band Standup button prints the standup into the chat', async 
   await clock.advance(100)
   const printed = logged.join(' | ')
   expect(printed).toContain('Standup since')
-  expect(printed).toContain('C3-1  [In Progress]  Do a thing')
+  expect(printed).toContain('C3-1  In Progress  Do a thing')
   await ui.unmount()
 })
 
@@ -391,11 +397,40 @@ test('standup picks the previous working day and formats every section', () => {
   expect(formatStandup({ since: new Date(), issues: undefined, prs: undefined, commits: undefined })).toContain('Jira: could not read')
 })
 
-test('App Insights light counts exceptions and failed requests', () => {
-  expect(insightsLight({ ex: 0, fr: 0 }, 'qa', 15).value).toBe('0')
-  expect(insightsLight({ ex: 0, fr: 0 }, 'qa', 15).color).toBe('#3ddc84')
-  expect(insightsLight({ ex: 173, fr: 40 }, 'qa', 15).value).toBe('173/40')
-  expect(insightsLight({ ex: 173, fr: 40 }, 'qa', 15).color).toBe('#ffc107')
-  expect(insightsLight({ error: 'not logged in' }, 'qa', 15).value).toBe('?')
-  expect(insightsLight(undefined, 'qa', 15).value).toBe('?')
+test('release radar names prod, next and development', () => {
+  expect(newestRelease(['origin/release/next/1.9.0', 'origin/release/next/1.35.0', 'origin/release/next/1.8.0'])).toBe('origin/release/next/1.35.0')
+  expect(ticketsIn(['C3-1 a', 'Merged C3-1 and PHX-2', 'C3-0000 sync'])).toEqual(['C3-1', 'PHX-2'])
+  const r = radarLight({ prod: 'origin/release/prod/1.34.0', next: 'origin/release/next/1.35.0', nextCommits: ['C3-1 a', 'C3-2 b'], devCommits: ['C3-2 b', 'C3-3 c'] })
+  expect(r.value).toBe('1.34.0')
+  expect(r.short).toContain('1.35.0 is next: 2 ticket(s)')
+  expect(r.short).toContain('development has 1 more ticket(s)')
+  expect(r.detail[1]).toEqual({ text: 'in 1.35.0: C3-1', url: 'https://keyjira.atlassian.net/browse/C3-1' })
+  expect(radarLight(undefined).value).toBe('?')
+})
+
+test('branch drift warns on overlapping files', () => {
+  expect(driftLight({ branch: 'b', behind: 0, overlap: [] }).value).toBe('synced')
+  expect(driftLight({ branch: 'b', behind: 4, overlap: [] }).color).toBe('#ffc107')
+  const d = driftLight({ branch: 'b', behind: 4, overlap: ['a.cs', 'b.cs'] })
+  expect(d.color).toBe('#ff5252')
+  expect(d.value).toBe('4↓ 2 clash')
+  expect(driftLight(undefined).value).toBe('?')
+})
+
+test('team awareness lights: reviews, merged today, ship check', () => {
+  const pr = (age: number) => ({ title: 'C3-1 x', ageDays: age, commentCount: 0, url: 'https://bb/pr/1', repo: { id: 'r' } })
+  expect(reviewLight({ data: { pullRequests: [] } }, 'r').value).toBe('0')
+  expect(reviewLight({ data: { pullRequests: [pr(1)] } }, 'r').color).toBe('#ffc107')
+  expect(reviewLight({ data: { pullRequests: [pr(5)] } }, 'r').color).toBe('#ff5252')
+  expect(reviewLight(undefined, 'r').value).toBe('?')
+  const m = mergedLight(['Ann|Merged in bug/C3-9-x (pull request #12)', 'Bo|Merged in feat/C3-8-y (pull request #11)'])
+  expect(m.value).toBe('2')
+  expect(m.detail[0]).toBe('Ann  C3-9  #12')
+  expect(mergedLight([]).short).toContain('Nothing has merged')
+  expect(shipLight([], '1.35.0', 72).value).toBe('clear')
+  const sl = shipLight([{ key: 'C3-5', status: { name: 'In QA' }, summary: 'S', url: 'https://x/C3-5' }], '1.35.0', 72)
+  expect(sl.value).toBe('1 open')
+  expect(sl.detail[0]).toBe('1 In QA')
+  expect(sl.detail[1]).toEqual({ text: 'C3-5  In QA  S', url: 'https://x/C3-5' })
+  expect(shipLight(undefined, '1.35.0', 0).value).toBe('?')
 })

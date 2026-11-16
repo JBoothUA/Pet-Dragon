@@ -22,10 +22,7 @@
     "seq_poll_seconds": { "type": "number", "title": "Seq check interval (seconds)", "description": "How often to count recent Seq errors", "default": 60, "min": 15, "max": 3600 },
     "seq_window_minutes": { "type": "number", "title": "Seq error window (minutes)", "description": "The Seq light counts Error and Fatal events from this many minutes back", "default": 15, "min": 1, "max": 1440 },
     "ui_port": { "type": "number", "title": "UI port", "description": "Local port the phoenix-ui dev server listens on (checked with CoreAPI)", "default": 5173, "min": 1, "max": 65535 },
-    "appinsights_app_id": { "type": "string", "title": "Application Insights app ID", "description": "App ID of the Application Insights resource the AI light reads (default: mvdc-phx-ai-qa). Needs az installed and logged in", "default": "dd3c06db-db3f-4802-b31c-2b6cd060384b" },
-    "appinsights_name": { "type": "string", "title": "Application Insights name", "description": "Only used to word the AI light", "default": "mvdc-phx-ai-qa" },
-    "appinsights_window_minutes": { "type": "number", "title": "App Insights window (minutes)", "description": "The AI light counts exceptions and failed requests from this many minutes back", "default": 15, "min": 1, "max": 1440 },
-    "appinsights_poll_minutes": { "type": "number", "title": "App Insights check interval (minutes)", "description": "How often to query Application Insights (each query takes a few seconds)", "default": 5, "min": 1, "max": 60 },
+    "radar_poll_minutes": { "type": "number", "title": "Release radar interval (minutes)", "description": "How often to fetch origin and refresh the Prod and Drift lights", "default": 10, "min": 1, "max": 120 },
     "skill_suggestions": { "type": "string", "title": "Skill suggestions", "description": "ask = offer related skills before a prompt is sent; off = never", "default": "ask", "options": ["ask", "off"] },
     "skill_min_score": { "type": "number", "title": "Skill suggestion sensitivity", "description": "Lower suggests more often. A skill-name word match scores 3, a description word 1.", "default": 2, "min": 1, "max": 10 }
   }

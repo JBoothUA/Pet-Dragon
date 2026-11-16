@@ -48,7 +48,11 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | CI | The newest Bitbucket Pipelines run for your current branch: **passed**, **failed**, **running**, **stopped** or **none**. Click to open the pipelines page | `twg bb pipeline query` for `bitbucket_repo` |
 | Tests | The last test run Claude started this session: `dotnet test`, `npm test`/jest, `k6 run`, `playwright test`. It reads the runner's own summary line, so it cannot see runs you start in another terminal | The Bash tool's output | Shows **not run** until Claude runs one; it is not a CI result.
 | Logs (Seq) | Error and Fatal events in the last `seq_window_minutes`, capped at **50+**. Seq is the local log viewer the APIs write to (port 5341); grey **off** just means it is not running. Click to open Seq | Seq's HTTP API at `seq_url` |
-| AI | Exceptions / failed requests in Application Insights over the last `appinsights_window_minutes` (default QA, `mvdc-phx-ai-qa`), shown as `173/40`. Green at 0, amber otherwise. Needs `az` installed and logged in | `az monitor app-insights query` via `scripts/insights-probe.ps1` |
+| Prod | The release pipeline from git: **production** version (newest `origin/release/prod/*`), the **next** release branch (`release/next/*`) with its ticket count, and how many more tickets `development` holds beyond that cut. The light shows the production version; hover for the rest. Fetches origin every `radar_poll_minutes` | git (refs only, no checkout) |
+| Drift | How far your branch is behind `origin/development`, and **red** when files you changed were also changed there (a merge conflict in waiting) | git |
+| Ship | Of the tickets in the next release branch (prod..next), how many are **not Done in Jira** yet. Amber lists them with their status | Jira via `twg`, tickets read from git |
+| Merged | PRs merged into `development` since local midnight, and by whom (hover for author, ticket and PR number) | git |
+| Review | Open PRs waiting on **your** review; red when any is older than 3 days | `twg prs query --role reviewer` |
 
 Light colors:
 

@@ -372,15 +372,109 @@ export function seqLight(events, windowMinutes, limit, seqUrl) {
   return { color: COLORS.red, value: label, short: label + ' error(s) in Seq in the last ' + windowMinutes + ' minutes', detail, url }
 }
 
-// Application Insights: r = { ex, fr } counts from the insights probe (exceptions, failed requests), or { error }.
-export function insightsLight(r, name, windowMinutes) {
-  if (!r || r.error) return { color: COLORS.grey, value: '?', short: 'Could not read Application Insights' + (r?.error ? ': ' + shorten(r.error, 80) : '') + ' (az installed and logged in? try az login)', detail: [] }
-  const ex = Number(r.ex)
-  const fr = Number(r.fr)
-  const where = name ? ' in ' + name : ''
-  const detail = [ex + ' exception(s), ' + fr + ' failed request(s)' + where + ', last ' + windowMinutes + ' minutes']
-  if (ex + fr === 0) return { color: COLORS.green, value: '0', short: 'No exceptions or failed requests' + where + ' in the last ' + windowMinutes + ' minutes', detail }
-  return { color: COLORS.amber, value: ex + '/' + fr, short: ex + ' exception(s) and ' + fr + ' failed request(s)' + where + ' in the last ' + windowMinutes + ' minutes', detail }
+// ---- Release radar and branch drift ----
+
+const TICKET = /\b(?:C3|PHX)-\d+\b/g
+
+export function ticketsIn(subjects) {
+  const seen = new Set()
+  for (const t of subjects ?? []) for (const m of String(t).match(TICKET) ?? []) if (!/-0+$/.test(m)) seen.add(m)
+  return [...seen]
+}
+
+// Newest of origin/release/<kind>/<version> branches, compared numerically (1.35.0 beats 1.9.0)
+export function newestRelease(branches) {
+  const ver = (b) => (/(\d+(?:\.\d+)*)$/.exec(b)?.[1] ?? '0').split('.').map(Number)
+  const best = (branches ?? []).map((b) => b.trim()).filter(Boolean)
+  best.sort((a, b) => {
+    const x = ver(a)
+    const y = ver(b)
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0)
+    return 0
+  })
+  return best[best.length - 1]
+}
+
+const releaseName = (b) => String(b ?? '').replace(/^origin\//, '').replace(/^release\/(prod|next)\//, '')
+
+// r = { prod, next, nextCommits, devCommits, prodAt, devAt }: commit subjects between prod..next and next..development
+export function radarLight(r, jiraBase) {
+  if (!r || !r.prod) return { color: COLORS.grey, value: '?', short: 'Could not read release branches (no origin/release/prod/* found; fetch?)', detail: [] }
+  const base = jiraBase ?? 'https://keyjira.atlassian.net/browse/'
+  const prod = releaseName(r.prod)
+  const next = r.next ? releaseName(r.next) : undefined
+  const nextT = ticketsIn(r.nextCommits)
+  const devT = ticketsIn(r.devCommits).filter((t) => !nextT.includes(t))
+  const nextN = (r.nextCommits ?? []).length
+  const devN = (r.devCommits ?? []).length
+  const parts = ['Production runs ' + prod + (r.prodAt ? ' (cut ' + r.prodAt.slice(0, 10) + ')' : '')]
+  if (next) parts.push(next + ' is next: ' + nextT.length + ' ticket(s), ' + nextN + ' commit(s)')
+  parts.push('development has ' + devT.length + ' more ticket(s), ' + devN + ' commit(s)' + (next ? ' since the ' + next + ' cut' : ''))
+  const detail = [
+    'Prod ' + prod + '  →  Next ' + (next ?? 'none') + ' (+' + nextT.length + ' tickets)  →  development (+' + devT.length + ' tickets)',
+    r.devAt ? 'development last changed ' + r.devAt.slice(0, 16).replace('T', ' ') + 'Z' : '',
+    ...nextT.slice(0, 8).map((t) => link('in ' + (next ?? 'next') + ': ' + t, base + t)),
+    nextT.length > 8 ? '…and ' + (nextT.length - 8) + ' more in ' + next : '',
+  ].filter(Boolean)
+  return { color: COLORS.teal, value: prod, short: parts.join('. '), detail, brief: ['prod ' + prod, (next ?? '-') + ' +' + nextT.length, 'dev +' + devT.length] }
+}
+
+// d = { branch, behind, overlap: [paths] }: behind = commits on origin/development you do not have;
+// overlap = files you changed that development also changed since you branched
+export function driftLight(d) {
+  if (!d) return { color: COLORS.grey, value: '?', short: 'Could not compare with origin/development', detail: [] }
+  const o = d.overlap ?? []
+  const detail = [d.behind + ' commit(s) behind origin/development', o.length + ' of your changed file(s) also changed on development']
+  for (const f of o.slice(0, 8)) detail.push(f)
+  if (o.length > 8) detail.push('…and ' + (o.length - 8) + ' more')
+  if (o.length) return { color: COLORS.red, value: d.behind + '↓ ' + o.length + ' clash', short: o.length + ' file(s) you changed were also changed on development (' + o.slice(0, 3).join(', ') + (o.length > 3 ? ', …' : '') + '). Expect a merge conflict; consider merging development now', detail }
+  if (d.behind) return { color: COLORS.amber, value: d.behind + '↓', short: d.branch + ' is ' + d.behind + ' commit(s) behind origin/development, but none of your changed files overlap', detail }
+  return { color: COLORS.green, value: 'synced', short: d.branch + ' has everything on origin/development', detail }
+}
+
+// PRs where you are a reviewer (twg prs query --role reviewer). Old ones turn red: you are the blocker.
+export function reviewLight(json, repoId) {
+  const all = json?.data?.pullRequests
+  if (!Array.isArray(all)) return { color: COLORS.grey, value: '?', short: 'Could not read PRs waiting on your review (is twg logged in?)', detail: [] }
+  const prs = repoId ? all.filter((p) => p.repo?.id === repoId) : all
+  if (prs.length === 0) return { color: COLORS.green, value: '0', short: 'No open PRs are waiting on your review', detail: [] }
+  const stale = prs.filter((p) => Number(p.ageDays) >= 3).length
+  const detail = prs.map((p) => link(p.title + ' (' + (p.ageDays ?? '?') + 'd old, ' + (p.commentCount ?? 0) + ' comments)', p.url))
+  const short = prs.length + ' open PR(s) waiting on your review' + (stale ? ', ' + stale + ' older than 3 days' : '')
+  return { color: stale ? COLORS.red : COLORS.amber, value: String(prs.length), short, detail, brief: prs.map((p) => String(p.title ?? '').slice(0, 8).trim() + ' ' + (p.ageDays ?? '?') + 'd') }
+}
+
+// lines: "author|subject" from `git log origin/development --first-parent`, merged since local midnight
+export function mergedLight(lines) {
+  if (!Array.isArray(lines)) return { color: COLORS.grey, value: '?', short: 'Could not read origin/development history', detail: [] }
+  const rows = lines
+    .map((l) => {
+      const i = l.indexOf('|')
+      const who = l.slice(0, i)
+      const subj = l.slice(i + 1)
+      const pr = /pull request #(\d+)/.exec(subj)?.[1]
+      const key = /\b(?:C3|PHX)-\d+\b/.exec(subj)?.[0]
+      return { who, key, pr, subj }
+    })
+    .filter((r) => r.who)
+  if (rows.length === 0) return { color: COLORS.grey, value: '0', short: 'Nothing has merged into development yet today', detail: [] }
+  const people = new Set(rows.map((r) => r.who))
+  const detail = rows.slice(0, 10).map((r) => r.who + '  ' + (r.key ?? shorten(r.subj, 60)) + (r.pr ? '  #' + r.pr : ''))
+  if (rows.length > 10) detail.push('…and ' + (rows.length - 10) + ' more')
+  return { color: COLORS.teal, value: String(rows.length), short: rows.length + ' PR(s) merged into development today by ' + people.size + ' people (' + [...people].slice(0, 4).join(', ') + (people.size > 4 ? ', …' : '') + ')', detail }
+}
+
+// open = Jira issues in the next release that are not Done: { issues: [{ key, status, summary, url }], total }
+export function shipLight(open, nextName, total) {
+  if (!Array.isArray(open)) return { color: COLORS.grey, value: '?', short: 'Could not check ' + (nextName ?? 'next release') + ' tickets in Jira (is twg logged in?)', detail: [] }
+  if (open.length === 0) return { color: COLORS.green, value: 'clear', short: 'All ' + total + ' ticket(s) in ' + nextName + ' are Done in Jira', detail: [] }
+  const detail = open.slice(0, 10).map((i) => link(i.key + '  ' + (i.status?.name ?? '?') + '  ' + shorten(i.summary, 70), i.url))
+  if (open.length > 10) detail.push('…and ' + (open.length - 10) + ' more')
+  const by = {}
+  for (const i of open) by[i.status?.name ?? '?'] = (by[i.status?.name ?? '?'] ?? 0) + 1
+  const mix = Object.entries(by).sort((x, y) => y[1] - x[1]).map(([k, v]) => v + ' ' + k).join(', ')
+  detail.unshift(mix)
+  return { color: COLORS.amber, value: open.length + ' open', short: open.length + ' of ' + total + ' ticket(s) in ' + nextName + ' are not Done in Jira yet (' + mix + ')', detail, brief: open.slice(0, 6).map((i) => i.key + ' ' + (i.status?.name ?? '?')) }
 }
 
 // ---- Standup ----

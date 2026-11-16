@@ -21,7 +21,13 @@ import {
   gitLight,
   pipelineLight,
   seqLight,
-  insightsLight,
+  radarLight,
+  reviewLight,
+  mergedLight,
+  shipLight,
+  ticketsIn,
+  driftLight,
+  newestRelease,
   isTestCommand,
   parseTestRun,
   testLight,
@@ -58,10 +64,7 @@ const DEFAULTS = {
   seq_poll_seconds: 60,
   seq_window_minutes: 15,
   ui_port: 5173,
-  appinsights_app_id: 'dd3c06db-db3f-4802-b31c-2b6cd060384b',
-  appinsights_name: 'mvdc-phx-ai-qa',
-  appinsights_window_minutes: 15,
-  appinsights_poll_minutes: 5,
+  radar_poll_minutes: 10,
   skill_suggestions: 'ask',
   skill_min_score: 2,
   // twg returns PRs from every repo you authored in; only this one (phoenix) is counted
@@ -78,17 +81,21 @@ const SOURCES = [
   { id: 'ui', label: 'UI', title: 'phoenix-ui dev server', row: 0, parent: 'coreapi' },
   { id: 'jira', label: 'Jira', title: 'Jira', row: 1 },
   { id: 'bitbucket', label: 'PRs', title: 'PRs', row: 1 },
+  { id: 'reviews', label: 'Review', title: 'PRs to review', row: 1, parent: 'bitbucket' },
   { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1 },
   { id: 'teams', label: 'Teams', title: 'Teams', row: 1, parent: 'outlook' },
   { id: 'git', label: 'Git', title: 'Git', row: 2 },
   { id: 'pipeline', label: 'CI', title: 'Pipelines', row: 2 },
   { id: 'tests', label: 'Tests', title: 'Tests', row: 2 },
   { id: 'seq', label: 'Logs', title: 'Seq errors', row: 2 },
-  { id: 'insights', label: 'AI', title: 'App Insights', row: 2 },
+  { id: 'radar', label: 'Prod', title: 'Release radar', row: 3 },
+  { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, parent: 'radar' },
+  { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
+  { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, parent: 'radar' },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar'])
 const ERROR_LIMIT = 50
 
 let opts = { ...DEFAULTS }
@@ -122,7 +129,7 @@ function intervalMs(id) {
   if (id === 'git') return Number(opts.git_poll_seconds) * 1000
   if (id === 'pipeline') return Number(opts.pipeline_poll_minutes) * 60_000
   if (id === 'seq') return Number(opts.seq_poll_seconds) * 1000
-  if (id === 'insights') return Number(opts.appinsights_poll_minutes) * 60_000
+  if (id === 'radar') return Number(opts.radar_poll_minutes) * 60_000
   return Number(opts.bitbucket_poll_minutes) * 60_000
 }
 
@@ -146,7 +153,9 @@ function lightUrl(id) {
   if (id === 'pipeline') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
   if (id === 'seq') return opts.seq_url
   if (id === 'ui') return 'http://localhost:' + opts.ui_port
-  if (id === 'insights') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
+  if (id === 'radar') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/branches/'
+  if (id === 'reviews') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pull-requests/?state=OPEN&reviewer=me'
+  if (id === 'merged') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/commits/branch/development'
   return undefined
 }
 
@@ -212,11 +221,11 @@ async function poll($, id, force) {
       )
       setLight(key, jiraLight(parseJson(r.stdout)), now)
     } else if (key === 'bitbucket') {
-      const r = await $.process.run(
-        ['twg', 'prs', 'query', '--scope', 'me', '--role', 'author', '--state', 'open', '-o', 'json', '--output-summary', 'none'],
-        { timeoutMs: 180_000 },
-      )
+      const prQuery = (role) =>
+        $.process.run(['twg', 'prs', 'query', '--scope', 'me', '--role', role, '--state', 'open', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 180_000 })
+      const [r, rv] = await Promise.all([prQuery('author'), prQuery('reviewer')])
       setLight(key, prLight(parseJson(r.stdout), opts.pr_repo_id), now)
+      setLight('reviews', reviewLight(parseJson(rv.stdout), opts.pr_repo_id), now)
     } else if (key === 'git') {
       if (!repoRoot) setLight(key, gitLight(undefined), now)
       else {
@@ -242,9 +251,58 @@ async function poll($, id, force) {
         }
       }
       setLight(key, pipelineLight(runs, branch, opts.bitbucket_repo, anyBranch), now)
-    } else if (key === 'insights') {
-      const r = await runPowerShell($, 'insights-probe.ps1', ['-AppId', String(opts.appinsights_app_id), '-Minutes', String(opts.appinsights_window_minutes)])
-      setLight(key, insightsLight(r, opts.appinsights_name, opts.appinsights_window_minutes), now)
+    } else if (key === 'radar') {
+      if (!repoRoot) {
+        setLight('radar', radarLight(undefined), now)
+        setLight('drift', driftLight(undefined), now)
+        setLight('merged', mergedLight(undefined), now)
+        setLight('ship', shipLight(undefined), now)
+      } else {
+        const git = async (args, timeoutMs = 30_000) => {
+          const r = await $.process.run(['git', '-C', repoRoot, ...args], { timeoutMs })
+          return r.exitCode === 0 ? r.stdout : undefined
+        }
+        const lines = (t) => (t ?? '').split(/\r?\n/).filter(Boolean)
+        // Refs only: no working-tree change. Keeps origin/* current so the radar and drift are not stale.
+        await git(['fetch', 'origin', '--quiet', '--prune'], 120_000)
+        const prod = newestRelease(lines(await git(['branch', '-r', '--list', 'origin/release/prod/*', '--format=%(refname:short)'])))
+        const next = newestRelease(lines(await git(['branch', '-r', '--list', 'origin/release/next/*', '--format=%(refname:short)'])))
+        const subjects = async (range) => (range ? lines(await git(['log', range, '--pretty=%s'])) : [])
+        const nextCommits = prod && next ? await subjects(prod + '..' + next) : []
+        const devCommits = await subjects((next ?? prod) ? (next ?? prod) + '..origin/development' : undefined)
+        const prodAt = prod ? (await git(['log', '-1', '--format=%cI', prod]))?.trim() : undefined
+        const devAt = (await git(['log', '-1', '--format=%cI', 'origin/development']))?.trim()
+        setLight('radar', radarLight(prod ? { prod, next, nextCommits, devCommits, prodAt, devAt } : undefined), now)
+
+        const mergedOut = await git(['log', 'origin/development', '--first-parent', '--since=midnight', '--pretty=%an|%s'])
+        setLight('merged', mergedLight(mergedOut === undefined ? undefined : lines(mergedOut)), now)
+
+        // Which tickets in the next release are not Done in Jira yet. Fails alone: only this light goes grey.
+        const keys = ticketsIn(nextCommits)
+        let open
+        if (keys.length) {
+          try {
+            const jr = await $.process.run(
+              ['twg', 'jira', 'workitem', 'query', '--jql', 'key in (' + keys.join(',') + ') AND statusCategory != Done', '--limit', '100', '-o', 'json', '--output-summary', 'none'],
+              { timeoutMs: 120_000 },
+            )
+            const issues = jr.exitCode === 0 ? parseJsonAny(jr.stdout)?.data?.issues : undefined
+            open = Array.isArray(issues) ? issues : undefined
+          } catch {
+            open = undefined
+          }
+        } else open = []
+        setLight('ship', shipLight(open, next ? next.replace(/^origin\/release\/next\//, '') : undefined, keys.length), now)
+
+        const base = (await git(['merge-base', 'HEAD', 'origin/development']))?.trim()
+        const behind = base ? Number((await git(['rev-list', '--count', 'HEAD..origin/development']))?.trim()) : NaN
+        if (!base || !Number.isFinite(behind)) setLight('drift', driftLight(undefined), now)
+        else {
+          const theirs = new Set(lines(await git(['diff', '--name-only', base, 'origin/development'])))
+          const mine = lines(await git(['diff', '--name-only', base]))
+          setLight('drift', driftLight({ branch: lights.git?.branch ?? 'HEAD', behind, overlap: mine.filter((f) => theirs.has(f)) }), now)
+        }
+      }
     } else if (key === 'seq') {
       const windowMin = Number(opts.seq_window_minutes)
       const from = new Date(now - windowMin * 60_000).toISOString()
@@ -459,10 +517,11 @@ export function register(on, options) {
     $.clock.after(1_000, () => poll($, 'coreapi'))
     $.clock.after(2_000, () => poll($, 'seq'))
     $.clock.after(3_000, () => poll($, 'outlook'))
+    $.clock.after(7_000, () => poll($, 'radar'))
     $.clock.after(5_000, () => poll($, 'jira'))
     $.clock.after(6_000, () => poll($, 'pipeline'))
     $.clock.after(8_000, () => poll($, 'bitbucket'))
-    for (const id of ['git', 'coreapi', 'seq', 'outlook', 'jira', 'pipeline', 'bitbucket']) $.clock.every(intervalMs(id), () => poll($, id))
+    for (const id of ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket']) $.clock.every(intervalMs(id), () => poll($, id))
     $.clock.every(10 * 60_000, () => loadSkills($))
     $.clock.every(60_000, () => checkSleepy($))
     return result
@@ -649,7 +708,7 @@ export function register(on, options) {
       ],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod']
     const lightRow = (row) =>
       Box({
         key: 'drg-row-' + row,
@@ -657,7 +716,7 @@ export function register(on, options) {
         columnGap: 2,
         children: [
           Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
-          ...SOURCES.filter((s) => s.row === row).map((s) => {
+          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off')).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
             return Button({
@@ -727,7 +786,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, lightRow(0), lightRow(1), lightRow(2), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, lightRow(0), lightRow(1), lightRow(2), lightRow(3), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
