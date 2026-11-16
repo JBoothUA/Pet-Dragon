@@ -2,6 +2,7 @@
 
 <img width="1198" height="133" alt="image" src="https://github.com/user-attachments/assets/018ac248-9ee8-4753-a065-20e43baa0c45" />
 
+<img width="989" height="179" alt="image" src="https://github.com/user-attachments/assets/9975347b-469f-4252-bf41-d2d97304fe89" />
 
 Dragon is a little winged dragon who lives above your Claude Code prompt. Its color shows what the session is doing. Next to it, status lights show Jira, Bitbucket, Outlook, Teams, your local CoreAPI, and your repo (git, pipelines, tests, Seq errors). Before you send a prompt, it can offer C3 skills that fit the task, and `/dragon standup` writes your standup.
 
