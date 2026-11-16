@@ -1,16 +1,16 @@
 // Pure helpers for pet-dragon: no mods API here, so they can be tested with plain Node.
 
 export const COLORS = {
-  flame: '#ff7a1a',
   ember: '#ffb347',
   idle: '#e0242a',
   working: '#ffd23f',
   tool: '#36c5f0',
   waiting: '#ff4fd8',
-  error: '#9a9a9a',
-  unread: '#4da3ff',
+  error: '#a1887f',
+  unread: '#3d6bff',
   context: '#b388ff',
-  typing: '#c6ff3d',
+  typing: '#ff7a1a',
+  sleepy: '#6c7a9c',
   green: '#3ddc84',
   teal: '#1de9b6',
   amber: '#ffc107',
@@ -25,14 +25,18 @@ export const MOODS = {
   tool: { color: COLORS.tool, label: 'Using a tool', short: 'Claude is running a tool' },
   working: { color: COLORS.working, label: 'Thinking', short: 'Claude is working on your request' },
   typing: { color: COLORS.typing, label: 'Listening to you', short: 'You are typing or dictating a prompt' },
+  sleepy: { color: COLORS.sleepy, label: 'Asleep', short: 'Nothing has happened for a while; type to wake the dragon' },
   unread: { color: COLORS.unread, label: 'Unread messages', short: 'You have unread Outlook mail' },
   context: { color: COLORS.context, label: 'Context filling up', short: 'Context window is over the threshold; consider /compact' },
   idle: { color: COLORS.idle, label: 'Ready', short: 'Idle and waiting for your next prompt' },
 }
 
-export function pickMood({ session, typing, unread, contextPct, contextWarn }) {
+// idleMs / sleepyAfterMs are optional: a caller that omits them never gets the sleepy mood.
+export function pickMood({ session, typing, unread, contextPct, contextWarn, idleMs, sleepyAfterMs }) {
   if (session === 'waiting' || session === 'error' || session === 'tool' || session === 'working') return session
   if (typing) return 'typing'
+  // Asleep beats the quiet moods: standing unread mail must not keep the dragon awake forever
+  if (typeof idleMs === 'number' && typeof sleepyAfterMs === 'number' && sleepyAfterMs > 0 && idleMs >= sleepyAfterMs) return 'sleepy'
   if (unread > 0) return 'unread'
   if (typeof contextPct === 'number' && contextPct >= contextWarn) return 'context'
   return 'idle'
@@ -63,11 +67,14 @@ const WING_UP = ['S...', 'SS..', 'SSS.', '.SSS', '..SS', '...S', '....', '....',
 const WING_LEVEL = ['....', '....', '....', 'S...', 'SSS.', 'SSSS', '.SSS', '..SS', '...S', '....', '....']
 const WING_DOWN = ['....', '....', '....', '....', '....', '....', '...S', '.SSS', 'SSSS', 'SSS.', 'SS..']
 
+// Asleep: the eye row becomes closed lids (no eye white)
+const SLEEP_MIDDLE = MIDDLE.map((m, y) => (y === 3 ? 'RkkRRkkR' : m))
+
 const mirror = (s) => [...s].reverse().join('')
 
 // lifted = body one pixel row higher (the downstroke), otherwise one row lower
-function pose(wing, lifted) {
-  const rows = MIDDLE.map((m, y) => wing[y] + m + mirror(wing[y]))
+function pose(wing, lifted, middle = MIDDLE) {
+  const rows = middle.map((m, y) => wing[y] + m + mirror(wing[y]))
   const blank = '.'.repeat(rows[0].length)
   return lifted ? [...rows, blank] : [blank, ...rows]
 }
@@ -75,6 +82,7 @@ function pose(wing, lifted) {
 // Resting pose, and the flap cycle while Claude works: the body rises as the wings come down.
 export const IDLE = pose(WING_LEVEL, false)
 export const FLAP = [pose(WING_UP, false), pose(WING_LEVEL, false), pose(WING_DOWN, true), pose(WING_LEVEL, true)]
+export const SLEEP = pose(WING_DOWN, false, SLEEP_MIDDLE)
 export const FLAP_MS = 200
 
 // Pads the grid by one pixel and marks every clear pixel that touches the sprite as outline (o).
@@ -134,6 +142,24 @@ export function parseJson(text) {
   } catch {
     return undefined
   }
+}
+
+// Like parseJson, but also accepts a top-level array (twg's pipeline query prints one)
+export function parseJsonAny(text) {
+  if (!text) return undefined
+  const a = text.indexOf('[')
+  const o = text.indexOf('{')
+  if (a >= 0 && (o < 0 || a < o)) {
+    const end = text.lastIndexOf(']')
+    if (end > a) {
+      try {
+        return JSON.parse(text.slice(a, end + 1))
+      } catch {
+        return undefined
+      }
+    }
+  }
+  return parseJson(text)
 }
 
 export function ago(ms, now) {
@@ -219,6 +245,157 @@ export function teamsLight(m) {
   return { color: COLORS.grey, value: 'off', short: 'Teams is not running', detail: [] }
 }
 
+// ---- Repo lights: git, pipeline, tests, Seq ----
+
+// Reads `git status --porcelain=v2 --branch`
+export function parseGitStatus(text) {
+  if (typeof text !== 'string' || !text.includes('# branch.head')) return undefined
+  const out = { branch: '', upstream: '', ahead: 0, behind: 0, changed: 0, untracked: 0, paths: [] }
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('# branch.head ')) out.branch = line.slice(14).trim()
+    else if (line.startsWith('# branch.upstream ')) out.upstream = line.slice(18).trim()
+    else if (line.startsWith('# branch.ab ')) {
+      const m = /\+(\d+) -(\d+)/.exec(line)
+      if (m) {
+        out.ahead = Number(m[1])
+        out.behind = Number(m[2])
+      }
+    } else if (line.startsWith('1 ')) {
+      out.changed++
+      out.paths.push(line.split(' ').slice(8).join(' '))
+    } else if (line.startsWith('2 ')) {
+      out.changed++
+      out.paths.push(line.split(' ').slice(9).join(' ').split('\t')[0])
+    } else if (line.startsWith('u ')) {
+      out.changed++
+      out.paths.push(line.split(' ').slice(10).join(' '))
+    } else if (line.startsWith('? ')) {
+      out.untracked++
+      out.paths.push(line.slice(2))
+    }
+  }
+  return out
+}
+
+export function gitLight(g) {
+  if (!g) return { color: COLORS.grey, value: '?', short: 'Not a git repository (or git failed)', detail: [], paths: [] }
+  const dirty = g.changed + g.untracked
+  const bits = []
+  if (dirty) bits.push(dirty + '~')
+  if (g.ahead) bits.push('↑' + g.ahead)
+  if (g.behind) bits.push('↓' + g.behind)
+  const detail = [
+    'Branch: ' + g.branch + (g.upstream ? ' → ' + g.upstream : ' (no upstream)'),
+    g.changed + ' changed, ' + g.untracked + ' untracked, ' + g.ahead + ' ahead, ' + g.behind + ' behind',
+  ]
+  const short = g.branch + ': ' + (bits.length ? [dirty ? dirty + ' uncommitted' : '', g.ahead ? g.ahead + ' to push' : '', g.behind ? g.behind + ' behind upstream' : ''].filter(Boolean).join(', ') : 'clean and in sync')
+  const color = g.behind ? COLORS.amber : dirty || g.ahead ? COLORS.teal : COLORS.green
+  return { color, value: bits.length ? bits.join(' ') : 'clean', short, detail, branch: g.branch, paths: g.paths.slice(0, 200) }
+}
+
+// twg bb pipeline query -o json prints an array of pipeline runs, newest first
+export function pipelineLight(runs, branch) {
+  if (!Array.isArray(runs)) return { color: COLORS.grey, value: '?', short: 'Could not read Bitbucket Pipelines (is twg logged in?)', detail: [] }
+  const where = branch ? ' on ' + branch : ''
+  if (runs.length === 0) return { color: COLORS.grey, value: 'none', short: 'No pipeline runs' + where, detail: [] }
+  const r = runs[0]
+  const state = r.state?.name ?? ''
+  const result = r.state?.result?.name ?? ''
+  const detail = runs.slice(0, 5).map((x) => '#' + x.build_number + '  ' + (x.state?.result?.name ?? x.state?.name ?? '?') + '  ' + (x.created_on ?? '').slice(0, 16).replace('T', ' '))
+  const tag = '#' + r.build_number
+  if (state === 'COMPLETED' && result === 'SUCCESSFUL') return { color: COLORS.green, value: 'passed', short: 'Latest pipeline ' + tag + where + ' passed', detail, build: r.build_number }
+  if (state === 'COMPLETED' && result === 'STOPPED') return { color: COLORS.grey, value: 'stopped', short: 'Latest pipeline ' + tag + where + ' was stopped', detail, build: r.build_number }
+  if (state === 'COMPLETED') return { color: COLORS.red, value: 'failed', short: 'Latest pipeline ' + tag + where + ' ' + (result || 'failed').toLowerCase(), detail, build: r.build_number }
+  return { color: COLORS.working, value: 'running', short: 'Pipeline ' + tag + where + ' is ' + (state || 'running').toLowerCase().replace('_', ' '), detail, build: r.build_number }
+}
+
+// A Bash tool result has no exit code, so a test run is read off the runner's own summary line.
+const TEST_COMMAND = /\b(dotnet\s+test|npm\s+(run\s+)?test|npx\s+jest|jest|k6\s+run|playwright\s+test|vitest)\b/i
+
+export function isTestCommand(command) {
+  return TEST_COMMAND.test(String(command ?? ''))
+}
+
+// Returns { runner, passed, failed } or undefined when the output has no recognizable summary.
+export function parseTestRun(command, output) {
+  const text = String(output ?? '')
+  const cmd = String(command ?? '')
+  let m
+  if (/dotnet\s+test/i.test(cmd) && (m = /(Passed|Failed)!\s*-\s*Failed:\s*(\d+),\s*Passed:\s*(\d+)/i.exec(text))) {
+    return { runner: 'dotnet', passed: Number(m[3]), failed: Number(m[2]) }
+  }
+  if (/k6\s+run/i.test(cmd)) {
+    if (/some thresholds have failed|level=error/i.test(text)) return { runner: 'k6', passed: 0, failed: 1 }
+    if (/http_req_duration|checks[.\s]/i.test(text)) return { runner: 'k6', passed: 1, failed: 0 }
+    return undefined
+  }
+  if ((m = /Tests:\s+(?:(\d+)\s+failed,\s+)?(?:\d+\s+skipped,\s+)?(?:\d+\s+todo,\s+)?(\d+)\s+passed/i.exec(text))) {
+    return { runner: 'jest', passed: Number(m[2]), failed: Number(m[1] ?? 0) }
+  }
+  if ((m = /Tests:\s+(\d+)\s+failed/i.exec(text))) return { runner: 'jest', passed: 0, failed: Number(m[1]) }
+  if ((m = /(\d+)\s+passed/i.exec(text)) && /playwright/i.test(cmd)) {
+    const f = /(\d+)\s+failed/i.exec(text)
+    return { runner: 'playwright', passed: Number(m[1]), failed: Number(f?.[1] ?? 0) }
+  }
+  return undefined
+}
+
+export function testLight(run, command) {
+  if (!run) return { color: COLORS.grey, value: 'none', short: 'No test run seen yet (counts runs Claude starts: dotnet test, jest, k6, playwright)', detail: [] }
+  const detail = [run.runner + ': ' + run.passed + ' passed, ' + run.failed + ' failed', command ? 'Command: ' + shorten(command, 100) : ''].filter(Boolean)
+  if (run.failed > 0) return { color: COLORS.red, value: run.failed + ' fail', short: run.runner + ' run: ' + run.failed + ' failed, ' + run.passed + ' passed', detail }
+  return { color: COLORS.green, value: run.passed + ' pass', short: run.runner + ' run: ' + run.passed + ' passed', detail }
+}
+
+// events: Seq's /api/events array, newest first. windowMinutes only words the message; Seq filters by time.
+export function seqLight(events, windowMinutes, limit) {
+  if (!Array.isArray(events)) return { color: COLORS.grey, value: 'off', short: 'Seq did not answer (is it running?)', detail: [] }
+  const n = events.length
+  const label = n >= limit ? n + '+' : String(n)
+  if (n === 0) return { color: COLORS.green, value: '0', short: 'No errors in Seq in the last ' + windowMinutes + ' minutes', detail: [] }
+  const detail = events.slice(0, 8).map((e) => (e.Timestamp ?? '').slice(11, 19) + '  ' + shorten(e.RenderedMessage ?? e.MessageTemplate ?? JSON.stringify(e.Properties ?? {}), 110))
+  return { color: COLORS.red, value: label, short: label + ' error(s) in Seq in the last ' + windowMinutes + ' minutes', detail }
+}
+
+// ---- Standup ----
+
+// Local calendar day as YYYY-MM-DD (what Jira's JQL and twg's --updated-since take)
+export function localDay(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
+}
+
+// Start of the previous working day, local time: yesterday, or Friday when today is Monday (or the weekend)
+export function standupSince(now) {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const back = now.getDay() === 1 ? 3 : now.getDay() === 0 ? 2 : 1
+  d.setDate(d.getDate() - back)
+  return d
+}
+
+// since: a Date; issues from the Jira query, prs from `twg prs query`, commits as `sha subject` lines.
+export function formatStandup({ since, issues, prs, commits, repoId }) {
+  const when = since.toISOString().slice(0, 16).replace('T', ' ') + 'Z'
+  const lines = ['Standup since ' + when, '']
+  const jira = Array.isArray(issues) ? issues : undefined
+  lines.push('Jira (' + (jira ? jira.length : '?') + ')')
+  if (!jira) lines.push('  could not read Jira (is twg logged in?)')
+  else if (jira.length === 0) lines.push('  nothing updated')
+  else for (const i of jira) lines.push('  ' + i.key + '  [' + (i.status?.name ?? '?') + ']  ' + shorten(i.summary, 90))
+  lines.push('')
+  const all = Array.isArray(prs) ? (repoId ? prs.filter((p) => p.repo?.id === repoId) : prs) : undefined
+  lines.push('Pull requests (' + (all ? all.length : '?') + ')')
+  if (!all) lines.push('  could not read Bitbucket PRs (is twg logged in?)')
+  else if (all.length === 0) lines.push('  nothing updated')
+  else for (const p of all) lines.push('  ' + shorten(p.title, 80) + '  [' + String(p.state ?? '?').toLowerCase() + ', ' + (p.commentCount ?? 0) + ' comments]')
+  lines.push('')
+  lines.push('Commits (' + (commits ? commits.length : '?') + ')')
+  if (!commits) lines.push('  could not read git log')
+  else if (commits.length === 0) lines.push('  none')
+  else for (const c of commits.slice(0, 15)) lines.push('  ' + shorten(c, 100))
+  if (commits && commits.length > 15) lines.push('  …and ' + (commits.length - 15) + ' more')
+  return lines.join('\n')
+}
+
 // ---- Skill suggestions ----
 
 const STOP = new Set(
@@ -264,11 +441,57 @@ export function indexSkills(commands, ownPlugin) {
     }))
 }
 
+// Which skill a path points at. Only skills that are actually installed are ever suggested.
+export const PATH_RULES = [
+  { re: /(^|[\\/])phoenix-ui[\\/].*\.(test|spec)\.tsx?$/i, skills: ['c3-testing-frontend', 'c3-frontend'] },
+  { re: /(^|[\\/])phoenix-ui[\\/]/i, skills: ['c3-frontend'] },
+  { re: /(^|[\\/])bff[\\/].*UnitTests/i, skills: ['c3-testing-backend', 'c3-bff'] },
+  { re: /(^|[\\/])bff[\\/]/i, skills: ['c3-bff'] },
+  { re: /(^|[\\/])core-api[\\/]MainDBMigrations/i, skills: ['c3-database'] },
+  { re: /(^|[\\/])core-api[\\/].*UnitTests/i, skills: ['c3-testing-backend', 'c3-backend'] },
+  { re: /(^|[\\/])(core-api|ingestion|movedocs|workflow-engine|shared)[\\/]/i, skills: ['c3-backend'] },
+  { re: /(^|[\\/])open-api[\\/]/i, skills: ['c3-codegen'] },
+  { re: /(^|[\\/])automation[\\/]/i, skills: ['c3-performance'] },
+]
+
+// Paths -> Map(skill name -> number of paths pointing at it)
+export function pathSignals(paths, rules = PATH_RULES) {
+  const out = new Map()
+  for (const p of paths ?? []) {
+    const rule = rules.find((r) => r.re.test(p))
+    if (!rule) continue
+    for (const name of rule.skills) out.set(name, (out.get(name) ?? 0) + 1)
+  }
+  return out
+}
+
+// Path-looking words in a prompt: anything with a slash and an extension or a known top-level folder
+export function pathsInText(text) {
+  return String(text ?? '').match(/[\w.-]+(?:[\\/][\w.@-]+)+/g) ?? []
+}
+
+// affinity: { [skill]: { accepted, declined } } kept in $.store. Accepting adds up to +3, and every
+// third decline takes one point back. It only nudges a skill that already matched something.
+export function affinityBoost(aff) {
+  if (!aff) return 0
+  return Math.min(3, aff.accepted ?? 0) - Math.floor((aff.declined ?? 0) / 3)
+}
+
+export function recordAffinity(affinity, accepted, declined) {
+  const next = { ...affinity }
+  for (const n of accepted) next[n] = { accepted: (next[n]?.accepted ?? 0) + 1, declined: next[n]?.declined ?? 0 }
+  for (const n of declined) next[n] = { accepted: next[n]?.accepted ?? 0, declined: (next[n]?.declined ?? 0) + 1 }
+  return next
+}
+
 // A skill-name word scores 3, a description word 1. The default minimum of 2 means one name hit
 // or two description hits.
-export function suggestSkills(prompt, skills, { max = 2, minScore = 2, exclude = new Set() } = {}) {
+// Extra signals (all optional):
+//   pathHits  Map(skill -> count) from files touched this session or changed in the git diff: +1 each, max +2
+//   promptPathHits  same, from paths written in the prompt itself: +3 (enough alone)
+//   affinity  see affinityBoost
+export function suggestSkills(prompt, skills, { max = 2, minScore = 2, exclude = new Set(), pathHits, promptPathHits, affinity } = {}) {
   const words = tokenize(prompt)
-  if (words.size === 0) return []
   const lower = String(prompt).toLowerCase()
   const scored = []
   for (const s of skills) {
@@ -286,6 +509,17 @@ export function suggestSkills(prompt, skills, { max = 2, minScore = 2, exclude =
         hits.push(w)
       }
     }
+    // Touched files only corroborate: they never suggest a skill the prompt's own words did not
+    const fromPaths = hits.length ? Math.min(2, pathHits?.get(s.name) ?? 0) : 0
+    if (fromPaths) {
+      score += fromPaths
+      hits.push('files')
+    }
+    if (promptPathHits?.get(s.name)) {
+      score += 3
+      hits.push('path')
+    }
+    if (score > 0) score = Math.max(0, score + affinityBoost(affinity?.[s.name]))
     if (score >= minScore) scored.push({ name: s.name, description: s.description, score, hits })
   }
   scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))

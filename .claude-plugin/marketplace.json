@@ -6,7 +6,7 @@
     {
       "name": "pet-dragon",
       "source": "./plugins/pet-dragon",
-      "description": "Dragon, a little winged dragon, above your prompt: session-state colors, Jira/Bitbucket/Outlook/Teams/CoreAPI lights, and opt-in skill suggestions."
+      "description": "Dragon, a little winged dragon, above your prompt: session-state colors, Jira/Bitbucket/Outlook/Teams/CoreAPI/git/CI/test/Seq lights, a sleepy mode, opt-in skill suggestions, and /dragon standup."
     }
   ]
 }

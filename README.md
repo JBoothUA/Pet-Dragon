@@ -1,13 +1,13 @@
 # Pet Dragon
 
-Dragon is a little winged dragon who lives above your Claude Code prompt. Its color shows what the session is doing. Next to it, status lights show Jira, Bitbucket, Outlook, Teams, and your local CoreAPI. Before you send a prompt, it can offer C3 skills that fit the task.
+Dragon is a little winged dragon who lives above your Claude Code prompt. Its color shows what the session is doing. Next to it, status lights show Jira, Bitbucket, Outlook, Teams, your local CoreAPI, and your repo (git, pipelines, tests, Seq errors). Before you send a prompt, it can offer C3 skills that fit the task, and `/dragon standup` writes your standup.
 
 ```
    ▄▀▄▀▄  ▄▀▄▄▀▄       ● Thinking — Claude is working on your request  ctx 12%
   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▄▄     APIs  ● Core local db  ● BFF up  ● MD off
    ▄▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀    Work  ● Jira 4  ● PRs 8  ● Mail 1  ● Teams running
-  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀     hover Dragon or a light for details · /dragon for more
-   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀     Repo  ● Git 2~ ↑1  ● CI passed  ● Tests 41 pass  ● Seq 0
+   ▀▀▀▀▀▀▀▀▀▀▀▀▀▀       hover Dragon or a light for details · /dragon for more
 ```
 
 Dragon is a 16x12 pixel front-facing dragon sprite, drawn with half-block characters, so it needs a terminal with 24-bit color (Windows Terminal, VS Code, iTerm2). Its body takes the mood color below; the wings are a darker shade, and the horns and crest, cream belly, eyes, nostrils, and brown feet stay the same. Run `npm run preview` in this repo to see every mood in real terminal colors, or `npm run preview:animate` for the working animation.
@@ -23,9 +23,11 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | Color | Meaning |
 |---|---|
 | Pink | Needs you: Claude is waiting for a permission or an answer |
-| Grey | The last turn ended with an error |
+| Brown | The last turn ended with an error |
 | Cyan | Claude is running a tool (wings flap) |
 | Yellow | Claude is thinking (wings flap) |
+| Orange | Listening: you are typing or dictating a prompt |
+| Slate | Asleep: nothing has happened for `sleepy_after_minutes`, or you ran `/dragon sleep` (eyes closed; typing or any turn wakes it). It outranks the rows below, so unread mail doesn't keep Dragon awake |
 | Blue | You have unread Outlook mail |
 | Purple | The context window is past `context_warn_percent`. Consider `/compact` |
 | Red | Ready and idle |
@@ -41,6 +43,10 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | PRs | Your PRs that are still open (drafts included; merged and declined PRs are not counted), with age and comment count in `/dragon` | `twg prs query --role author --state open` |
 | Mail | Unread Inbox count | Classic Outlook, through COM. It never launches Outlook |
 | Teams | Whether Teams is running (green) or not (grey). It does not count unread chats: Teams has no local API for that | `Get-Process ms-teams` |
+| Git | Your branch in the session's repo: uncommitted files (`2~`), commits to push (`↑1`), commits behind upstream (`↓3`, amber), or **clean** | `git status --porcelain=v2 --branch`. Its changed files also feed skill suggestions |
+| CI | The newest Bitbucket Pipelines run for your current branch: **passed**, **failed**, **running**, **stopped** or **none**. Click to open the pipelines page | `twg bb pipeline query` for `bitbucket_repo` |
+| Tests | The last test run Claude started this session: `dotnet test`, `npm test`/jest, `k6 run`, `playwright test`. It reads the runner's own summary line, so it cannot see runs you start in another terminal | The Bash tool's output |
+| Seq | Error and Fatal events in the last `seq_window_minutes`, capped at **50+**. Click to open Seq | Seq's HTTP API at `seq_url` |
 
 Light colors:
 
@@ -51,7 +57,7 @@ Light colors:
 - Red: down.
 - Grey: off, not set up, or not checked yet.
 
-**Explanations.** Hover over Dragon or a light to see a short explanation on the third line. Hover needs mouse support in your terminal; it works best in fullscreen mode. `/dragon` always works. It opens a pane with every light's details, issue and PR lists, the color legend, and two buttons: **r** refreshes everything and **s** turns skill suggestions on or off.
+**Explanations.** Hover over Dragon or a light to see a short explanation on the third line. Hover needs mouse support in your terminal; it works best in fullscreen mode. `/dragon` always works. It opens a pane with every light's details, issue and PR lists, the color legend, and three buttons: **r** refreshes everything, **u** gathers your standup into the pane, and **s** turns skill suggestions on or off.
 
 ## Skill suggestions
 
@@ -64,7 +70,19 @@ When you type a normal prompt, Dragon compares it with the names and description
 - **No thanks**: your prompt goes through unchanged, and Dragon won't offer that skill again this session.
 - **Stop suggesting**: turns suggestions off. Press **s** in `/dragon` to turn them back on.
 
+Dragon gets better at this as you use it:
+
+- **It learns.** Each skill you accept earns up to +3 points on later prompts, and every third decline takes one back. This lives in the plugin store, so it carries across sessions. Learning only nudges a skill that already matched your words; it never creates a suggestion on its own.
+- **It reads files.** Files Claude has edited this session and the files in your git diff point at skills (`core-api/` → `c3-backend`, `phoenix-ui/` → `c3-frontend`, `bff/` → `c3-bff`, `MainDBMigrations` → `c3-database`, `open-api/` → `c3-codegen`, test files → the testing skills). Each such file adds 1 point, up to 2, and only when your prompt's words already matched, so it cannot suggest a skill out of the blue. The rules are `PATH_RULES` in `hooks/lib.js`.
+- **Paths you type count more.** Writing a path such as `phoenix-ui/src/...` in your prompt adds 3 points, enough to suggest the skill on its own.
+
 Slash commands, short prompts, and prompts typed while Claude is working are never interrupted. Set `skill_suggestions` to `off` to disable suggestions entirely.
+
+## Standup
+
+`/dragon standup` prints what changed since the previous working day (yesterday, or Friday on a Monday): your Jira issues updated, your Bitbucket PRs updated (open, merged or declined, in `pr_repo_id`'s repo), and your own commits across all local branches. The three sources run in parallel, and one that fails (say `twg` is logged out) says so without hiding the others. The **[ Standup ]** button at the end of the band's top line (and the pane's **u** button) opens `/dragon` and shows the same text there.
+
+`/dragon sleep` puts Dragon to sleep at once instead of waiting for `sleepy_after_minutes`; typing anything wakes it.
 
 ## Install
 
@@ -87,7 +105,9 @@ If you've cloned the repo, add your clone's path instead of the URL. A local mar
 **Requirements:**
 
 - Windows PowerShell, for the CoreAPI, Outlook, and Teams probes. On other platforms those lights stay grey.
-- `twg` on your PATH and logged in, for Jira and PRs.
+- `twg` on your PATH and logged in, for Jira, PRs, pipelines and the standup.
+- `git` on your PATH, for the Git light and the standup's commits.
+- Seq reachable at `seq_url` (default `http://localhost:5341`) for the Seq light. It stays grey **off** if Seq isn't running.
 - Classic Outlook for the Mail light. The new Outlook has no local API.
 
 ## Settings
@@ -105,10 +125,18 @@ Change these from `/plugin`, under pet-dragon's options:
 | `bitbucket_poll_minutes` | 10 | The Bitbucket query takes about 15 seconds, so keep this one slow |
 | `jira_jql` | your open issues | Which issues the Jira light counts |
 | `context_warn_percent` | 80 | |
+| `sleepy_after_minutes` | 20 | Dragon falls asleep after this long with no typing, turns or tool calls. 0 = never |
+| `git_poll_seconds` | 30 | |
+| `pipeline_poll_minutes` | 3 | |
+| `bitbucket_repo` | `keyhealthtech/phoenix` | `workspace/repo` whose pipelines the CI light reads |
+| `seq_url` | `http://localhost:5341` | |
+| `seq_api_key` | empty | Only if your Seq needs a key to read events |
+| `seq_poll_seconds` | 60 | |
+| `seq_window_minutes` | 15 | How far back the Seq light counts errors |
 | `skill_suggestions` | `ask` | `ask` or `off` |
 | `skill_min_score` | 2 | Lower suggests more often. A skill-name word scores 3, a description word 1 |
 
-Results are cached in the plugin store, so several open sessions share one Jira or Bitbucket check rather than each running its own.
+Results are cached in the plugin store, so several open sessions share one Jira, Bitbucket or Seq check rather than each running its own. Git, CI and Tests describe one session's repo and branch, so they are never shared.
 
 ## Develop
 

@@ -1,7 +1,7 @@
 {
   "name": "pet-dragon",
-  "version": "0.2.0",
-  "description": "Dragon, a little winged dragon, above your prompt: it changes color with the Claude session state, shows Jira / Bitbucket / Outlook / Teams / CoreAPI status lights, and offers related skills before you send a prompt.",
+  "version": "0.3.0",
+  "description": "Dragon, a little winged dragon, above your prompt: it changes color with the Claude session state (and dozes off when idle), shows Jira / Bitbucket / Outlook / Teams / CoreAPI / git / pipeline / test / Seq status lights, offers related skills before you send a prompt, and writes your standup with /dragon standup.",
   "author": { "name": "C3 team" },
   "userConfig": {
     "coreapi_port": { "type": "number", "title": "CoreAPI port", "description": "Local port CoreAPI listens on", "default": 5236, "min": 1, "max": 65535 },
@@ -13,6 +13,14 @@
     "bitbucket_poll_minutes": { "type": "number", "title": "Bitbucket check interval (minutes)", "description": "How often to count your open authored PRs", "default": 10, "min": 2, "max": 240 },
     "jira_jql": { "type": "string", "title": "Jira JQL", "description": "Which issues the Jira light counts", "default": "assignee = currentUser() AND statusCategory != Done" },
     "context_warn_percent": { "type": "number", "title": "Context warning (%)", "description": "Turn Dragon purple when the context window is this full", "default": 80, "min": 10, "max": 100 },
+    "sleepy_after_minutes": { "type": "number", "title": "Sleepy after (minutes)", "description": "Dragon falls asleep after this long with no typing, turns or tool calls. 0 = never", "default": 20, "min": 0, "max": 1440 },
+    "git_poll_seconds": { "type": "number", "title": "Git check interval (seconds)", "description": "How often to read git status (dirty, ahead, behind)", "default": 30, "min": 10, "max": 3600 },
+    "pipeline_poll_minutes": { "type": "number", "title": "Pipelines check interval (minutes)", "description": "How often to read the latest Bitbucket pipeline for your branch", "default": 3, "min": 1, "max": 240 },
+    "bitbucket_repo": { "type": "string", "title": "Bitbucket repository", "description": "workspace/repo whose pipelines the CI light reads", "default": "keyhealthtech/phoenix" },
+    "seq_url": { "type": "string", "title": "Seq URL", "description": "Where Seq listens; the Seq light counts recent errors there", "default": "http://localhost:5341" },
+    "seq_api_key": { "type": "string", "title": "Seq API key", "description": "Only needed if your Seq requires one to read events", "default": "", "sensitive": true },
+    "seq_poll_seconds": { "type": "number", "title": "Seq check interval (seconds)", "description": "How often to count recent Seq errors", "default": 60, "min": 15, "max": 3600 },
+    "seq_window_minutes": { "type": "number", "title": "Seq error window (minutes)", "description": "The Seq light counts Error and Fatal events from this many minutes back", "default": 15, "min": 1, "max": 1440 },
     "skill_suggestions": { "type": "string", "title": "Skill suggestions", "description": "ask = offer related skills before a prompt is sent; off = never", "default": "ask", "options": ["ask", "off"] },
     "skill_min_score": { "type": "number", "title": "Skill suggestion sensitivity", "description": "Lower suggests more often. A skill-name word match scores 3, a description word 1.", "default": 2, "min": 1, "max": 10 }
   }

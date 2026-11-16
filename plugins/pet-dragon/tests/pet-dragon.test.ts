@@ -1,5 +1,26 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { MOODS, pickMood } from '../hooks/lib.js'
+import {
+  MOODS,
+  SLEEP,
+  IDLE,
+  pickMood,
+  parseGitStatus,
+  gitLight,
+  pipelineLight,
+  seqLight,
+  parseTestRun,
+  isTestCommand,
+  testLight,
+  indexSkills,
+  suggestSkills,
+  pathSignals,
+  pathsInText,
+  recordAffinity,
+  formatStandup,
+  standupSince,
+  localDay,
+  parseJsonAny,
+} from '../hooks/lib.js'
 
 const BAND = {
   plugin: 'pet-dragon',
@@ -21,6 +42,20 @@ const PORTS = JSON.stringify({ '7102': { up: true, pid: 77, process: 'BFF' }, '7
 const JIRA = JSON.stringify({ data: { issues: [{ key: 'C3-1', summary: 'Do a thing', status: { name: 'In Progress' } }] } })
 const PRS = JSON.stringify({ data: { pullRequests: [{ title: 'Fix it', author: { displayName: 'Sam' }, ageDays: 2, repo: { id: '7b33633431633438372d666438652d346565362d396133392d3461376330663439316230367d' } }, { title: 'Other repo', ageDays: 1, repo: { id: 'other' } }] } })
 
+const GIT_STATUS = [
+  '# branch.oid 324a680',
+  '# branch.head feat/C3-1-thing',
+  '# branch.upstream origin/feat/C3-1-thing',
+  '# branch.ab +2 -0',
+  '1 .M N... 100644 100644 100644 aaa bbb phoenix-ui/src/App.tsx',
+  '? notes.txt',
+].join('\n')
+const PIPELINES = JSON.stringify([{ build_number: 3115, created_on: '2026-11-16T19:41:08Z', state: { name: 'COMPLETED', result: { name: 'SUCCESSFUL' } } }])
+const SEQ_EVENTS = JSON.stringify([{ Timestamp: '2026-11-16T19:41:08Z', RenderedMessage: 'Boom in CoreAPI' }])
+
+// What a Bash tool call prints, for tests that run a test command
+let bashStdout = ''
+
 // Everything session.start and the pollers need, answered in Claude Code's place
 function stubSession(on, asked: string[], answer: string, opened: string[] = []) {
   const clock = mock.clock(on)
@@ -41,15 +76,21 @@ function stubSession(on, asked: string[], answer: string, opened: string[] = [])
     else if (argv.includes('coreapi-probe')) stdout = CORE_UP_LOCAL
     else if (argv.includes('ports-probe')) stdout = PORTS
     else if (argv.includes('messages-probe')) stdout = MAIL
-    else if (argv.includes('jira')) stdout = JIRA
-    else if (argv.includes('prs')) stdout = PRS
+    else if (argv.includes('twg jira')) stdout = JIRA
+    else if (argv.includes('twg prs')) stdout = PRS
+    else if (argv.includes('pipeline query')) stdout = PIPELINES
+    else if (argv.includes('--porcelain=v2')) stdout = GIT_STATUS
+    else if (argv.includes('user.email')) stdout = 'me@example.com'
+    else if (argv.includes(' log ')) stdout = 'abc1234 C3-1 Fix the thing\ndef5678 C3-2 Add another'
     return { value: { exitCode: 0, stdout, stderr: '' } }
   })
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: SEQ_EVENTS } }))
   on('tool.call', ($, e) => {
     if (e.tool === 'AskUserQuestion') {
       asked.push(e.questions[0].question)
       return { result: { answers: { [e.questions[0].question]: answer } } }
     }
+    if (e.tool === 'Bash') return { result: { stdout: bashStdout, stderr: '' } }
     return { result: 'ok' }
   })
   return clock
@@ -120,7 +161,7 @@ test('slash commands and unrelated prompts are never interrupted', async ($, on)
   expect(asked.length).toBe(0)
 })
 
-test('typing turns Dragon lime unless Claude is busy or needs you', () => {
+test('typing turns Dragon orange unless Claude is busy or needs you', () => {
   const base = { unread: 3, contextPct: 95, contextWarn: 80 }
   // Typing beats the quieter moods (unread, context, idle)
   expect(pickMood({ ...base, session: 'idle', typing: true })).toBe('typing')
@@ -132,4 +173,179 @@ test('typing turns Dragon lime unless Claude is busy or needs you', () => {
   // A caller that never passes typing keeps the old behavior
   expect(pickMood({ session: 'idle', unread: 0, contextPct: 10, contextWarn: 80 })).toBe('idle')
   expect(MOODS.typing.label).toBe('Listening to you')
+})
+
+test('the repo row shows git, pipeline and Seq lights after the first polls', async ($, on) => {
+  const clock = stubSession(on, [], 'No thanks')
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+  await clock.advance(9_000)
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /Git: feat\/C3-1-thing: 2 uncommitted, 2 to push/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Pipelines: Latest pipeline #3115 on feat\/C3-1-thing passed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Seq errors: 1 error\(s\) in Seq/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Tests: No test run seen yet/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a test run Claude starts lights the Tests light', async ($, on) => {
+  const clock = stubSession(on, [], 'No thanks')
+  bashStdout = 'Failed!  - Failed:     2, Passed:    10, Skipped:     0, Total:    12'
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+  await $.tool.call({ tool: 'Bash', command: 'dotnet test Phoenix.sln' })
+  await clock.advance(1_000)
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /Tests: dotnet run: 2 failed, 10 passed/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('/dragon standup gathers Jira, PRs and commits', async ($, on) => {
+  stubSession(on, [], 'No thanks')
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+
+  const out = await $.command.run({ command: 'dragon', args: 'standup' })
+  expect(out.text).toContain('Standup since')
+  expect(out.text).toContain('C3-1  [In Progress]  Do a thing')
+  expect(out.text).toContain('Fix it')
+  expect(out.text).not.toContain('Other repo')
+  expect(out.text).toContain('abc1234 C3-1 Fix the thing')
+})
+
+test('pressing the band Standup button opens the pane with the standup in it', async ($, on) => {
+  const clock = stubSession(on, [], 'No thanks')
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+  await clock.advance(9_000)
+
+  const ui = await $.ui.mount(BAND)
+  await ui.press({ key: 'drg-standup-band' })
+  const pane = await $.ui.mount({ ...BAND, component: 'Pane', requestId: 'dragon', props: {} })
+  expect(await pane.find({ type: 'Text', text: /C3-1  \[In Progress\]  Do a thing/ })).toBeDefined()
+  await pane.unmount()
+  await ui.unmount()
+})
+
+test('/dragon sleep puts Dragon to sleep at once, and any activity wakes it', async ($, on) => {
+  const clock = stubSession(on, [], 'No thanks')
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+  await clock.advance(9_000)
+
+  const out = await $.command.run({ command: 'dragon', args: 'sleep' })
+  expect(out.text).toContain('falls asleep')
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Text', text: /Asleep/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('Dragon falls asleep after a long idle gap, and typing or work wakes it', () => {
+  const base = { session: 'idle', typing: false, unread: 0, contextPct: 10, contextWarn: 80, sleepyAfterMs: 20 * 60_000 }
+  expect(pickMood({ ...base, idleMs: 19 * 60_000 })).toBe('idle')
+  expect(pickMood({ ...base, idleMs: 20 * 60_000 })).toBe('sleepy')
+  // Typing and active work beat sleep
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, typing: true })).toBe('typing')
+  // ...except the quiet moods: unread mail and a full context window do not keep it awake
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, unread: 2 })).toBe('sleepy')
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, contextPct: 95 })).toBe('sleepy')
+  expect(pickMood({ ...base, idleMs: 1_000, unread: 2 })).toBe('unread')
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, session: 'working' })).toBe('working')
+  // 0 turns sleep off; a caller that passes no timings never sleeps
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, sleepyAfterMs: 0 })).toBe('idle')
+  expect(pickMood({ session: 'idle', unread: 0, contextWarn: 80 })).toBe('idle')
+  // Closed eyes: the sleeping sprite differs from the resting one, in the same size
+  expect(SLEEP.length).toBe(IDLE.length)
+  expect(SLEEP.join('\n')).not.toBe(IDLE.join('\n'))
+})
+
+test('git status parses branch, ahead/behind, changes and paths', () => {
+  const g = parseGitStatus(GIT_STATUS)!
+  expect(g).toMatchObject({ branch: 'feat/C3-1-thing', ahead: 2, behind: 0, changed: 1, untracked: 1 })
+  expect(g.paths).toEqual(['phoenix-ui/src/App.tsx', 'notes.txt'])
+  expect(gitLight(g).value).toBe('2~ \u21912')
+  expect(gitLight(parseGitStatus('# branch.head main\n# branch.ab +0 -0')!).value).toBe('clean')
+  expect(gitLight(parseGitStatus('# branch.head main\n# branch.ab +0 -3')!).color).toBe('#ffc107')
+  expect(gitLight(undefined).value).toBe('?')
+})
+
+test('pipeline light reads the newest run', () => {
+  const run = (state: string, result?: string) => [{ build_number: 7, state: { name: state, result: result ? { name: result } : undefined } }]
+  expect(pipelineLight(run('COMPLETED', 'SUCCESSFUL'), 'b').value).toBe('passed')
+  expect(pipelineLight(run('COMPLETED', 'FAILED'), 'b').value).toBe('failed')
+  expect(pipelineLight(run('IN_PROGRESS'), 'b').value).toBe('running')
+  expect(pipelineLight([], 'b').value).toBe('none')
+  expect(pipelineLight(undefined, 'b').value).toBe('?')
+  expect(parseJsonAny('noise\n[{"a":1}]\n')).toEqual([{ a: 1 }])
+  expect(parseJsonAny('{"data":1}')).toEqual({ data: 1 })
+})
+
+test('test runs are read off the runner summary', () => {
+  expect(isTestCommand('cd bff && dotnet test --filter X')).toBe(true)
+  expect(isTestCommand('npm run test -- -t foo')).toBe(true)
+  expect(isTestCommand('git status')).toBe(false)
+  expect(parseTestRun('dotnet test', 'Passed!  - Failed:     0, Passed:    41, Skipped:     0, Total:    41')).toEqual({ runner: 'dotnet', passed: 41, failed: 0 })
+  expect(parseTestRun('npm run test', 'Tests:       2 failed, 1 skipped, 30 passed, 33 total')).toEqual({ runner: 'jest', passed: 30, failed: 2 })
+  expect(parseTestRun('npm run test', 'Tests:       30 passed, 30 total')).toEqual({ runner: 'jest', passed: 30, failed: 0 })
+  expect(parseTestRun('k6 run x.js', 'ERRO[0030] some thresholds have failed')).toEqual({ runner: 'k6', passed: 0, failed: 1 })
+  expect(parseTestRun('dotnet test', 'Build FAILED.')).toBeUndefined()
+  expect(testLight({ runner: 'jest', passed: 3, failed: 0 }).color).toBe('#3ddc84')
+  expect(testLight({ runner: 'jest', passed: 3, failed: 1 }).color).toBe('#ff5252')
+})
+
+test('Seq light counts recent errors and caps the label', () => {
+  expect(seqLight([], 15, 50).value).toBe('0')
+  expect(seqLight([{ RenderedMessage: 'x' }], 15, 50).value).toBe('1')
+  expect(seqLight(new Array(50).fill({ RenderedMessage: 'x' }), 15, 50).value).toBe('50+')
+  expect(seqLight(undefined, 15, 50).value).toBe('off')
+})
+
+test('skill suggestions: file paths corroborate words, a path in the prompt stands alone', () => {
+  const skills = indexSkills(
+    [
+      { name: 'c3-backend', description: 'Use when writing .NET backend code: controllers, services, repositories', source: 'user' },
+      { name: 'c3-frontend', description: 'Use when writing React frontend code in phoenix-ui: components, hooks', source: 'user' },
+    ],
+    'pet-dragon',
+  )
+  const touchedBackend = pathSignals(['core-api/Orders/OrderService.cs', 'core-api/Orders/OrderRepo.cs'])
+  expect(touchedBackend.get('c3-backend')).toBe(2)
+  // Touched files alone never suggest a skill on an unrelated prompt
+  expect(suggestSkills('what time is it in Denver right now', skills, { pathHits: touchedBackend })).toEqual([])
+  // One description word (+1) plus touched files (+2) reaches the threshold; the word alone does not
+  expect(suggestSkills('please refactor this service method', skills, {}).length).toBe(0)
+  expect(suggestSkills('please refactor this service method', skills, { pathHits: touchedBackend })[0]?.name).toBe('c3-backend')
+  // A path written in the prompt is enough by itself
+  const written = pathSignals(pathsInText('tidy up phoenix-ui/src/pages/Dashboard/Tabs.tsx please'))
+  expect(suggestSkills('tidy up phoenix-ui/src/pages/Dashboard/Tabs.tsx please', skills, { promptPathHits: written })[0]?.name).toBe('c3-frontend')
+  expect(pathSignals(['phoenix-ui/src/Foo.test.tsx']).get('c3-testing-frontend')).toBe(1)
+})
+
+test('skill suggestions learn from accepted and declined answers', () => {
+  const skills = indexSkills([{ name: 'c3-backend', description: 'Use when writing backend services', source: 'user' }], 'pet-dragon')
+  const prompt = 'refactor the backend please'
+  const base = suggestSkills(prompt, skills, {})
+  expect(base[0].score).toBe(3)
+  let aff = recordAffinity({}, ['c3-backend'], [])
+  aff = recordAffinity(aff, ['c3-backend'], [])
+  expect(suggestSkills(prompt, skills, { affinity: aff })[0].score).toBe(5)
+  // Three declines take a point back; learning never invents a suggestion from nothing
+  const sour = recordAffinity(recordAffinity(recordAffinity({}, [], ['c3-backend']), [], ['c3-backend']), [], ['c3-backend'])
+  expect(suggestSkills(prompt, skills, { affinity: sour })[0].score).toBe(2)
+  expect(suggestSkills('what time is it in Denver', skills, { affinity: aff })).toEqual([])
+})
+
+test('standup picks the previous working day and formats every section', () => {
+  // Monday 2026-11-16 looks back to Friday the 13th; midweek looks back one day
+  expect(localDay(standupSince(new Date(2026, 10, 16, 9, 0)))).toBe('2026-11-13')
+  expect(localDay(standupSince(new Date(2026, 10, 18, 9, 0)))).toBe('2026-11-17')
+  const text = formatStandup({
+    since: new Date(Date.UTC(2026, 10, 13)),
+    issues: [{ key: 'C3-1', summary: 'Do a thing', status: { name: 'Done' } }],
+    prs: [{ title: 'Fix it', state: 'MERGED', commentCount: 3, repo: { id: 'r' } }, { title: 'Elsewhere', repo: { id: 'x' } }],
+    commits: ['abc Fix'],
+    repoId: 'r',
+  })
+  expect(text).toContain('C3-1  [Done]  Do a thing')
+  expect(text).toContain('Fix it  [merged, 3 comments]')
+  expect(text).not.toContain('Elsewhere')
+  expect(formatStandup({ since: new Date(), issues: undefined, prs: undefined, commits: undefined })).toContain('could not read Jira')
 })
