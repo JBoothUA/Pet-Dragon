@@ -23,6 +23,9 @@
     "seq_window_minutes": { "type": "number", "title": "Seq error window (minutes)", "description": "The Seq light counts Error and Fatal events from this many minutes back", "default": 15, "min": 1, "max": 1440 },
     "ui_port": { "type": "number", "title": "UI port", "description": "Local port the phoenix-ui dev server listens on (checked with CoreAPI)", "default": 5173, "min": 1, "max": 65535 },
     "radar_poll_minutes": { "type": "number", "title": "Release radar interval (minutes)", "description": "How often to fetch origin and refresh the Prod and Drift lights", "default": 10, "min": 1, "max": 120 },
+    "token_coach": { "type": "string", "title": "Token coach", "description": "advise = Dragon tells you when to /compact or /clear and when spend or limits run high; auto = it also compacts for you between turns once context passes auto_compact_percent", "default": "advise" },
+    "auto_compact_percent": { "type": "number", "title": "Auto-compact at (%)", "description": "In token_coach auto mode, compact between turns once the context window is this full", "default": 90, "min": 60, "max": 98 },
+    "db_scripts_dir": { "type": "string", "title": "DB switch scripts folder", "description": "Folder holding use-local-db.ps1 and use-docker-db.ps1, which the Core light runs to switch CoreAPI between your local and Docker SQL Server. Empty = your Desktop", "default": "" },
     "skill_suggestions": { "type": "string", "title": "Skill suggestions", "description": "ask = offer related skills before a prompt is sent; off = never", "default": "ask", "options": ["ask", "off"] },
     "skill_min_score": { "type": "number", "title": "Skill suggestion sensitivity", "description": "Lower suggests more often. A skill-name word match scores 3, a description word 1.", "default": 2, "min": 1, "max": 10 }
   }

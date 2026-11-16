@@ -53,6 +53,9 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | Ship | Of the tickets in the next release branch (prod..next), how many are **not Done in Jira** yet. Amber lists them with their status | Jira via `twg`, tickets read from git |
 | Merged | PRs merged into `development` since local midnight, and by whom (hover for author, ticket and PR number) | git |
 | Review | Open PRs waiting on **your** review; red when any is older than 3 days | `twg prs query --role reviewer` |
+| Ctx | How full the context window is. Green under 60%, amber to 85%, red above. The hover says when to `/compact` or `/clear` | `$.session.usage()` |
+| Today | What you've spent today across sessions, against your typical day (average of up to 14 earlier days with spend). Amber at 1.25x, red at 1.75x, once you pass $5 | `$.session.usage()` cost, kept in the plugin store |
+| Limit | The fullest of your 5-hour and 7-day usage windows, with when it resets | `$.session.usage()` rate limits |
 
 Light colors:
 
@@ -168,3 +171,18 @@ Code layout:
 - `scripts/*.ps1`: the Windows probes. Each prints one JSON object, and you can run them by hand to debug.
 
 An installed copy is cached by version, so bump `version` in `.claude-plugin/plugin.json` when you ship a change.
+
+## Token coach
+
+The Use row watches your token spend. Dragon pops a toast once per situation, and re-arms it when the situation clears:
+
+- context 60% full: a good moment to `/compact` at the next task boundary; 85%: `/compact` now
+- you switched git branch since the session began, and the context holds real work: `/clear` for the new ticket
+- the session is over 3 hours old and half full: `/clear` or `/compact`
+- today is 1.5x your typical day (and over $5), or a usage window is 80% used
+
+Set `token_coach` to `auto` and Dragon also runs `/compact` for you between turns once the context passes `auto_compact_percent` (default 90). There is no `/clear` call in the mod API, so that one is always advice. Spend counts only what Dragon saw while it was running.
+
+## Switching CoreAPI between your local and Docker database
+
+On the **Core** light, the name still opens Swagger. The database text beside it (`local db` or `docker db`) is its own button: click it and Dragon asks whether to switch to the other one. On yes it runs `use-docker-db.ps1` or `use-local-db.ps1` (from your Desktop, or `db_scripts_dir`), which stop CoreAPI and restart it on :5236 pointed at that database, then refreshes the light. It refuses, with a toast, when the target is not available: no Docker SQL container publishing :1433, or the local `MSSQLSERVER` service stopped.

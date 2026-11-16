@@ -191,8 +191,10 @@ export function coreApiLight(p, port) {
   for (const ev of p.dbEvidence ?? []) detail.push('evidence: ' + ev)
   if (!p.up) return { color: COLORS.red, value: 'down', short: 'CoreAPI is not listening on :' + port, detail }
   const who = (p.process ?? 'process') + ' pid ' + p.pid
-  if (p.db === 'local') return { color: COLORS.green, value: 'local db', short: 'CoreAPI up (' + who + ') \u2192 local SQL Server', detail }
-  if (p.db === 'docker') return { color: COLORS.teal, value: 'docker db', short: 'CoreAPI up (' + who + ') \u2192 Docker SQL container', detail }
+  // What a switch needs: the local SQL Server service running, or a Docker container publishing 1433
+  const ready = { dockerReady: Boolean(p.dockerSql) && p.dockerSql !== 'daemon-off', localReady: p.sqlService === 'Running' }
+  if (p.db === 'local') return { color: COLORS.green, value: 'local db', short: 'CoreAPI up (' + who + ') \u2192 local SQL Server. Click "local db" to switch to Docker', detail, ...ready }
+  if (p.db === 'docker') return { color: COLORS.teal, value: 'docker db', short: 'CoreAPI up (' + who + ') \u2192 Docker SQL container. Click "docker db" to switch to local', detail, ...ready }
   if (p.db === 'remote') return { color: COLORS.amber, value: 'remote db', short: 'CoreAPI up (' + who + ') \u2192 a remote SQL Server', detail }
   return { color: COLORS.amber, value: 'db ?', short: 'CoreAPI up (' + who + '), could not tell which database', detail }
 }
@@ -372,6 +374,85 @@ export function seqLight(events, windowMinutes, limit, seqUrl) {
   return { color: COLORS.red, value: label, short: label + ' error(s) in Seq in the last ' + windowMinutes + ' minutes', detail, url }
 }
 
+// ---- Token coach ----
+
+const usageColor = (pct) => (pct >= 85 ? COLORS.red : pct >= 60 ? COLORS.amber : COLORS.green)
+
+function untilReset(iso, nowMs) {
+  const t = Date.parse(iso ?? '')
+  if (!Number.isFinite(t)) return ''
+  const m = Math.max(0, Math.round((t - nowMs) / 60_000))
+  return m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + 'm'
+}
+
+export function ctxLight(pct) {
+  if (typeof pct !== 'number') return { color: COLORS.grey, value: '?', short: 'Context size is not known yet (it appears after the first reply)', detail: [] }
+  const v = Math.round(pct) + '%'
+  const short =
+    pct >= 85
+      ? 'Context is ' + v + ' full: /compact now (or /clear if the task has changed)'
+      : pct >= 60
+        ? 'Context is ' + v + ' full: /compact at the next task boundary'
+        : 'Context is ' + v + ' full: plenty of room'
+  return { color: usageColor(pct), value: v, short, detail: ['Every reply re-reads the whole context, so a fuller window costs more per turn and answers get less sharp.'] }
+}
+
+// days: { 'YYYY-MM-DD': usd }. Today's spend and the typical day from up to 14 earlier days with any spend (needs 3).
+export function dayStats(days, todayKey) {
+  const d = days ?? {}
+  const today = Number(d[todayKey] ?? 0)
+  const prev = Object.keys(d)
+    .filter((k) => k < todayKey && Number(d[k]) > 0)
+    .sort()
+    .slice(-14)
+    .map((k) => Number(d[k]))
+  const avg = prev.length >= 3 ? prev.reduce((a, b) => a + b, 0) / prev.length : undefined
+  return { today, avg, n: prev.length }
+}
+
+export function dayLight(st) {
+  if (!st) return { color: COLORS.grey, value: '?', short: 'Spend for today is not known yet', detail: [] }
+  const usd = '$' + st.today.toFixed(2)
+  const shown = st.today < 10 ? usd : '$' + Math.round(st.today)
+  if (st.avg === undefined) return { color: COLORS.teal, value: shown, short: 'Spent ' + usd + ' today. No comparison with a typical day yet: that needs 3 earlier days of history', detail: ['Counts every session Dragon has watched today.'] }
+  const ratio = st.avg > 0 ? st.today / st.avg : 0
+  const color = ratio >= 1.75 && st.today >= 5 ? COLORS.red : ratio >= 1.25 && st.today >= 5 ? COLORS.amber : COLORS.green
+  return {
+    color,
+    value: shown,
+    short: 'Spent ' + usd + ' today; a typical day is $' + st.avg.toFixed(2) + ' (' + ratio.toFixed(1) + 'x)',
+    detail: ['Typical day = average of your last ' + st.n + ' days with spend. Counts what Dragon saw while it was running.'],
+    ratio,
+  }
+}
+
+export function limitLight(limits, nowMs) {
+  if (!Array.isArray(limits) || limits.length === 0) return { color: COLORS.grey, value: 'n/a', short: 'No rate-limit reading yet (appears after a reply, on a subscription)', detail: [] }
+  const name = (k) => (k === 'five_hour' ? '5-hour window' : k === 'seven_day' ? '7-day window' : k === 'spend_limit' ? 'spend limit' : k)
+  const top = Math.max(...limits.map((l) => l.percentUsed))
+  const detail = limits.map((l) => name(l.kind) + ': ' + l.percentUsed + '% used' + (l.resetsAt ? ', resets in ' + untilReset(l.resetsAt, nowMs) : ''))
+  const worst = limits.find((l) => l.percentUsed === top)
+  return { color: usageColor(top), value: Math.round(top) + '%', short: name(worst.kind) + ' is ' + worst.percentUsed + '% used' + (worst.resetsAt ? ' (resets in ' + untilReset(worst.resetsAt, nowMs) + ')' : ''), detail, top }
+}
+
+// What to tell the user right now. Each item has a stable id so it is announced once and re-armed when it clears.
+// s = { contextPct, startBranch, branch, sessionMinutes, day, limits }
+export function tokenAdvice(s) {
+  const out = []
+  const pct = s.contextPct
+  if (typeof pct === 'number') {
+    if (pct >= 85) out.push({ id: 'compact-now', action: 'compact', text: 'Context is ' + Math.round(pct) + '% full. /compact now keeps what matters and frees room.' })
+    else if (pct >= 60) out.push({ id: 'compact-soon', text: 'Context is ' + Math.round(pct) + '% full. A good moment to /compact is the next task boundary.' })
+    if (s.startBranch && s.branch && s.startBranch !== s.branch && pct >= 30) out.push({ id: 'clear-branch', text: 'You moved from ' + s.startBranch + ' to ' + s.branch + '. /clear gives the new ticket a clean context.' })
+    if (Number(s.sessionMinutes) >= 180 && pct >= 50) out.push({ id: 'clear-old', text: 'This session is ' + (s.sessionMinutes / 60).toFixed(1) + ' hours old and ' + Math.round(pct) + '% full. /clear or /compact would start it lean.' })
+  }
+  const d = s.day
+  if (d && d.avg !== undefined && d.avg > 0 && d.today >= 5 && d.today / d.avg >= 1.5) out.push({ id: 'day-high', text: "You've spent $" + d.today.toFixed(2) + ' today, ' + (d.today / d.avg).toFixed(1) + 'x your typical $' + d.avg.toFixed(2) + '.' })
+  const top = Array.isArray(s.limits) && s.limits.length ? s.limits.reduce((a, b) => (b.percentUsed > a.percentUsed ? b : a)) : undefined
+  if (top && top.percentUsed >= 80) out.push({ id: 'limit-high', text: 'Your ' + (top.kind === 'five_hour' ? '5-hour' : top.kind === 'seven_day' ? '7-day' : top.kind) + ' usage window is ' + top.percentUsed + '% used.' })
+  return out
+}
+
 // ---- Release radar and branch drift ----
 
 const TICKET = /\b(?:C3|PHX)-\d+\b/g
@@ -397,6 +478,52 @@ export function newestRelease(branches) {
 
 const releaseName = (b) => String(b ?? '').replace(/^origin\//, '').replace(/^release\/(prod|next)\//, '')
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const DAY_MS = 86_400_000
+const dayMs = (d) => Date.parse(d + 'T00:00:00Z')
+const fmtDay = (ms) => MONTHS[new Date(ms).getUTCMonth()] + ' ' + new Date(ms).getUTCDate()
+
+// Forecast from git alone (Jira's C3 fix versions carry no release dates).
+// prodLines / nextLines: "origin/release/prod/1.34.0 2026-11-13" (branch, tip date); hotfixLines: "origin/hotfix/x 2026-11-10".
+// The next prod release is estimated as the last minor release plus the median gap between the last 4 minors.
+export function releaseForecast(prodLines, nextLines, hotfixLines, todayIso) {
+  const parse = (lines, kind) =>
+    (lines ?? [])
+      .map((l) => {
+        const m = new RegExp('release/' + kind + '/(\\d+)\\.(\\d+)\\.(\\d+)\\s+(\\d{4}-\\d{2}-\\d{2})').exec(l)
+        return m ? { v: m[1] + '.' + m[2] + '.' + m[3], key: Number(m[1]) * 1e6 + Number(m[2]) * 1e3 + Number(m[3]), pat: Number(m[3]), date: m[4] } : undefined
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.key - b.key)
+  const prod = parse(prodLines, 'prod')
+  const next = parse(nextLines, 'next')
+  const today = dayMs(todayIso)
+  const minors = prod.filter((r) => r.pat === 0)
+  const gaps = minors.slice(-5).map((r, i, a) => (i ? Math.round((dayMs(r.date) - dayMs(a[i - 1].date)) / DAY_MS) : undefined)).filter((g) => g > 0)
+  const last4 = gaps.slice(-4)
+  const sorted = [...last4].sort((a, b) => a - b)
+  const median = sorted.length >= 3 ? (sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : Math.round((sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2)) : undefined
+  const lastMinor = minors[minors.length - 1]
+  const out = { median, gaps: last4 }
+  if (lastMinor && median !== undefined) {
+    const est = dayMs(lastMinor.date) + median * DAY_MS
+    out.estDate = fmtDay(est)
+    out.overdueDays = est < today ? Math.round((today - est) / DAY_MS) : 0
+    out.daysAway = est >= today ? Math.round((est - today) / DAY_MS) : 0
+  }
+  const recent = prod.filter((r) => r.pat > 0 && today - dayMs(r.date) <= 30 * DAY_MS)
+  const prodSet = new Set(prod.map((r) => r.v))
+  out.hotfixes = recent.map((r) => ({ v: r.v, date: fmtDay(dayMs(r.date)) }))
+  const newestProd = prod.length ? prod[prod.length - 1].key : 0
+  // Only a patch branch newer than what is in production can be a hotfix still on its way
+  out.hotfixesInFlight = next.filter((r) => r.pat > 0 && r.key > newestProd && !prodSet.has(r.v)).map((r) => r.v)
+  out.hotfixBranches = (hotfixLines ?? [])
+    .map((l) => /(\S+)\s+(\d{4}-\d{2}-\d{2})$/.exec(l))
+    .filter((m) => m && today - dayMs(m[2]) <= 14 * DAY_MS)
+    .map((m) => m[1].replace(/^origin\//, ''))
+  return out
+}
+
 // r = { prod, next, nextCommits, devCommits, prodAt, devAt }: commit subjects between prod..next and next..development
 export function radarLight(r, jiraBase) {
   if (!r || !r.prod) return { color: COLORS.grey, value: '?', short: 'Could not read release branches (no origin/release/prod/* found; fetch?)', detail: [] }
@@ -409,14 +536,31 @@ export function radarLight(r, jiraBase) {
   const devN = (r.devCommits ?? []).length
   const parts = ['Production runs ' + prod + (r.prodAt ? ' (cut ' + r.prodAt.slice(0, 10) + ')' : '')]
   if (next) parts.push(next + ' is next: ' + nextT.length + ' ticket(s), ' + nextN + ' commit(s)')
+  if (r.forecast?.estDate) parts.push((next ?? 'Next release') + ' ' + (r.forecast.overdueDays ? 'was expected about ' : 'is estimated about ') + r.forecast.estDate)
+  if (r.forecast) parts.push('Hotfixes: ' + r.forecast.hotfixes.length + ' in 30 days, ' + (r.forecast.hotfixesInFlight.length ? r.forecast.hotfixesInFlight.join(', ') + ' in flight' : 'none in flight'))
   parts.push('development has ' + devT.length + ' more ticket(s), ' + devN + ' commit(s)' + (next ? ' since the ' + next + ' cut' : ''))
+  const f = r.forecast
+  const fLines = []
+  const fBrief = []
+  if (f?.estDate) {
+    const when = f.overdueDays ? 'was expected about ' + f.estDate + ' (' + f.overdueDays + ' day(s) ago)' : 'estimated about ' + f.estDate + ' (in ' + f.daysAway + ' day(s))'
+    fLines.push((next ?? 'The next release') + ' ' + when + ': last minor release + the median gap between the last ' + f.gaps.length + ' minors (' + f.median + ' days). An estimate from git history, not a booked date')
+    fBrief.push('next ' + (next ?? '') + ' ~' + f.estDate + ' (est.)')
+  }
+  if (f) {
+    const hf = f.hotfixes.length ? f.hotfixes.length + ' in the last 30 days (' + f.hotfixes.map((h) => h.v + ' ' + h.date).join(', ') + ')' : 'none in the last 30 days'
+    const fl = f.hotfixesInFlight.length ? 'in flight: ' + f.hotfixesInFlight.join(', ') : 'none planned'
+    fLines.push('Hotfixes: ' + hf + '; ' + fl + (f.hotfixBranches.length ? '; open hotfix branches: ' + f.hotfixBranches.join(', ') : ''))
+    fBrief.push('hotfixes ' + f.hotfixes.length + ' in 30d, ' + (f.hotfixesInFlight.length ? f.hotfixesInFlight.length + ' in flight' : '0 in flight'))
+  }
   const detail = [
     'Prod ' + prod + '  →  Next ' + (next ?? 'none') + ' (+' + nextT.length + ' tickets)  →  development (+' + devT.length + ' tickets)',
+    ...fLines,
     r.devAt ? 'development last changed ' + r.devAt.slice(0, 16).replace('T', ' ') + 'Z' : '',
     ...nextT.slice(0, 8).map((t) => link('in ' + (next ?? 'next') + ': ' + t, base + t)),
     nextT.length > 8 ? '…and ' + (nextT.length - 8) + ' more in ' + next : '',
   ].filter(Boolean)
-  return { color: COLORS.teal, value: prod, short: parts.join('. '), detail, brief: ['prod ' + prod, (next ?? '-') + ' +' + nextT.length, 'dev +' + devT.length] }
+  return { color: COLORS.teal, value: prod, short: parts.join('. '), detail, brief: ['prod ' + prod, (next ?? '-') + ' +' + nextT.length + ' tix', 'dev +' + devT.length, ...fBrief] }
 }
 
 // d = { branch, behind, overlap: [paths] }: behind = commits on origin/development you do not have;

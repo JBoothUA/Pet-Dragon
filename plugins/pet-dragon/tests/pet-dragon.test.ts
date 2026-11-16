@@ -11,6 +11,13 @@ import {
   prLight,
   seqLight,
   radarLight,
+  coreApiLight,
+  releaseForecast,
+  ctxLight,
+  dayStats,
+  dayLight,
+  limitLight,
+  tokenAdvice,
   reviewLight,
   mergedLight,
   shipLight,
@@ -66,6 +73,7 @@ const SEQ_EVENTS = JSON.stringify([{ Timestamp: '2026-11-16T19:41:08Z', Rendered
 let bashStdout = ''
 // Transcript lines the plugin printed with $.ui.log
 const logged: string[] = []
+const toasted: string[] = []
 
 // Everything session.start and the pollers need, answered in Claude Code's place
 function stubSession(on, asked: string[], answer: string, opened: string[] = []) {
@@ -77,7 +85,10 @@ function stubSession(on, asked: string[], answer: string, opened: string[] = [])
   on('command.list', () => ({ value: COMMANDS }))
   on('session.root', () => ({ value: 'C:\\repo' }))
   on('session.usage', () => ({ value: { context: { tokens: 1000, window: 200000, percent: 12 } } }))
-  on('ui.toast', () => ({ value: undefined }))
+  on('ui.toast', ($, e) => {
+    toasted.push(String(e.text))
+    return { value: undefined }
+  })
   on('ui.log', ($, e) => {
     if (e.to !== 'debug') logged.push(e.text)
     return { value: undefined }
@@ -139,10 +150,24 @@ test('pressing a light opens its URL through the open-url script', async ($, on)
   await clock.advance(9_000)
 
   const ui = await $.ui.mount(BAND)
-  await ui.press({ key: 'drg-light-coreapi' })
+  await ui.press({ key: 'drg-light-coreapi-open' })
   expect(opened.length).toBe(1)
   expect(opened[0]).toMatch(/[\\/]scripts[\\/]open-url\.ps1/)
   expect(opened[0]).toContain('http://localhost:5236/swagger')
+  await ui.unmount()
+})
+
+test('pressing the Core database text offers a switch, and refuses when the other database is not up', async ($, on) => {
+  const opened: string[] = []
+  const clock = stubSession(on, [], 'No thanks', opened)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\repo' })
+  await clock.advance(9_000)
+
+  const ui = await $.ui.mount(BAND)
+  await ui.press({ key: 'drg-light-coreapi-db' })
+  // Docker is off in the stub, so Dragon declines to restart CoreAPI against it and says why
+  expect(toasted.join(' ')).toContain('No Docker SQL container')
+  expect(opened.length).toBe(0)
   await ui.unmount()
 })
 
@@ -433,4 +458,64 @@ test('team awareness lights: reviews, merged today, ship check', () => {
   expect(sl.detail[0]).toBe('1 In QA')
   expect(sl.detail[1]).toEqual({ text: 'C3-5  In QA  S', url: 'https://x/C3-5' })
   expect(shipLight(undefined, '1.35.0', 0).value).toBe('?')
+})
+
+test('token coach lights and advice', () => {
+  expect(ctxLight(40).color).toBe('#3ddc84')
+  expect(ctxLight(70).color).toBe('#ffc107')
+  expect(ctxLight(91).value).toBe('91%')
+  expect(ctxLight(91).short).toContain('/compact now')
+  expect(ctxLight(undefined).value).toBe('?')
+  const days = { '2026-11-10': 10, '2026-11-11': 12, '2026-11-12': 8, '2026-11-16': 30 }
+  const st = dayStats(days, '2026-11-16')
+  expect(st).toEqual({ today: 30, avg: 10, n: 3 })
+  expect(dayLight(st).color).toBe('#ff5252')
+  const early = dayLight(dayStats({ '2026-11-16': 3.4 }, '2026-11-16'))
+  expect(early.value).toBe('$3.40')
+  expect(early.short).toContain('Spent $3.40 today')
+  expect(early.short).toContain('No comparison')
+  const now = Date.parse('2026-11-16T12:00:00Z')
+  const lim = limitLight([{ kind: 'five_hour', percentUsed: 82, resetsAt: '2026-11-16T13:20:00Z' }, { kind: 'seven_day', percentUsed: 40 }], now)
+  expect(lim.value).toBe('82%')
+  expect(lim.short).toBe('5-hour window is 82% used (resets in 1h 20m)')
+  expect(limitLight([], now).value).toBe('n/a')
+  const ids = (s: object) => tokenAdvice(s as never).map((a) => a.id)
+  expect(ids({ contextPct: 50 })).toEqual([])
+  expect(ids({ contextPct: 70 })).toEqual(['compact-soon'])
+  expect(tokenAdvice({ contextPct: 92 } as never)[0].action).toBe('compact')
+  expect(ids({ contextPct: 40, startBranch: 'a', branch: 'b' })).toEqual(['clear-branch'])
+  expect(ids({ contextPct: 55, sessionMinutes: 200 })).toEqual(['clear-old'])
+  expect(ids({ day: { today: 30, avg: 10, n: 3 } })).toEqual(['day-high'])
+  expect(ids({ limits: [{ kind: 'seven_day', percentUsed: 85 }] })).toEqual(['limit-high'])
+})
+
+test('release forecast estimates the next release and lists hotfixes', () => {
+  const prod = ['origin/release/prod/1.30.0 2026-09-10', 'origin/release/prod/1.31.0 2026-10-15', 'origin/release/prod/1.32.0 2026-10-26', 'origin/release/prod/1.32.1 2026-10-28', 'origin/release/prod/1.33.0 2026-11-06', 'origin/release/prod/1.33.1 2026-11-10', 'origin/release/prod/1.34.0 2026-11-13']
+  const next = ['origin/release/next/1.34.0 2026-11-06', 'origin/release/next/1.31.1 2026-10-08', 'origin/release/next/1.34.1 2026-11-15', 'origin/release/next/1.35.0 2026-11-16']
+  const f = releaseForecast(prod, next, ['origin/hotfix/C3-1-x 2026-11-14', 'origin/hotfix/C3-2-old 2026-08-19'], '2026-11-16')
+  expect(f.gaps).toEqual([35, 11, 11, 7])
+  expect(f.median).toBe(11)
+  expect(f.estDate).toBe('Nov 24')
+  expect(f.daysAway).toBe(8)
+  expect(f.hotfixes.map((h) => h.v)).toEqual(['1.32.1', '1.33.1'])
+  expect(f.hotfixesInFlight).toEqual(['1.34.1'])
+  expect(f.hotfixBranches).toEqual(['hotfix/C3-1-x'])
+  expect(releaseForecast(prod, next, [], '2026-12-01').overdueDays).toBe(7)
+  expect(releaseForecast([], [], [], '2026-11-16').estDate).toBeUndefined()
+  const r = radarLight({ prod: 'origin/release/prod/1.34.0', next: 'origin/release/next/1.35.0', nextCommits: ['C3-1 a'], devCommits: [], forecast: f })
+  expect(r.brief).toContain('next 1.35.0 ~Nov 24 (est.)')
+  expect(r.brief).toContain('hotfixes 2 in 30d, 1 in flight')
+  expect(r.short).toContain('Hotfixes: 2 in 30 days, 1.34.1 in flight')
+})
+
+test('Core light says which database it uses and whether the other is ready to switch to', () => {
+  const up = { up: true, pid: 1, process: 'dotnet', repoRoot: 'C:/r', dataSource: '.', sqlService: 'Running', dockerSql: 'daemon-off' }
+  const local = coreApiLight({ ...up, db: 'local' }, 5236)
+  expect(local.value).toBe('local db')
+  expect(local.dockerReady).toBe(false)
+  expect(local.short).toContain('switch to Docker')
+  const docker = coreApiLight({ ...up, db: 'docker', sqlService: 'Stopped', dockerSql: 'sql1' }, 5236)
+  expect(docker.value).toBe('docker db')
+  expect(docker.dockerReady).toBe(true)
+  expect(docker.localReady).toBe(false)
 })

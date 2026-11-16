@@ -22,6 +22,12 @@ import {
   pipelineLight,
   seqLight,
   radarLight,
+  releaseForecast,
+  ctxLight,
+  dayStats,
+  dayLight,
+  limitLight,
+  tokenAdvice,
   reviewLight,
   mergedLight,
   shipLight,
@@ -65,6 +71,9 @@ const DEFAULTS = {
   seq_window_minutes: 15,
   ui_port: 5173,
   radar_poll_minutes: 10,
+  db_scripts_dir: '',
+  token_coach: 'advise',
+  auto_compact_percent: 90,
   skill_suggestions: 'ask',
   skill_min_score: 2,
   // twg returns PRs from every repo you authored in; only this one (phoenix) is counted
@@ -92,10 +101,13 @@ const SOURCES = [
   { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, parent: 'radar' },
   { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
   { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, parent: 'radar' },
+  { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
+  { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
+  { id: 'limit', label: 'Limit', title: 'Usage limits', row: 4 },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day', 'limit'])
 const ERROR_LIMIT = 50
 
 let opts = { ...DEFAULTS }
@@ -272,7 +284,14 @@ async function poll($, id, force) {
         const devCommits = await subjects((next ?? prod) ? (next ?? prod) + '..origin/development' : undefined)
         const prodAt = prod ? (await git(['log', '-1', '--format=%cI', prod]))?.trim() : undefined
         const devAt = (await git(['log', '-1', '--format=%cI', 'origin/development']))?.trim()
-        setLight('radar', radarLight(prod ? { prod, next, nextCommits, devCommits, prodAt, devAt } : undefined), now)
+        const refs = async (...patterns) => lines(await git(['for-each-ref', '--format=%(refname:short) %(committerdate:short)', ...patterns]))
+        const forecast = releaseForecast(
+          await refs('refs/remotes/origin/release/prod'),
+          await refs('refs/remotes/origin/release/next'),
+          await refs('refs/remotes/origin/hotfix'),
+          localDay(new Date(now)),
+        )
+        setLight('radar', radarLight(prod ? { prod, next, nextCommits, devCommits, prodAt, devAt, forecast } : undefined), now)
 
         const mergedOut = await git(['log', 'origin/development', '--first-parent', '--since=midnight', '--pretty=%an|%s'])
         setLight('merged', mergedLight(mergedOut === undefined ? undefined : lines(mergedOut)), now)
@@ -330,12 +349,132 @@ async function poll($, id, force) {
   }
 }
 
-async function refreshContext($) {
+// CoreAPI's database toggle: "local db" offers Docker, "docker db" offers local; any other state offers nothing
+const dbSwitchTarget = (l) => (l?.value === 'local db' ? 'docker' : l?.value === 'docker db' ? 'local' : undefined)
+let switchingDb = false
+
+async function switchDb($, to) {
+  if (switchingDb) return
+  const from = to === 'docker' ? 'local' : 'docker'
+  const cur = lights.coreapi
+  if (to === 'docker' && cur?.dockerReady === false) {
+    $.ui.toast('No Docker SQL container is publishing :1433. Start Docker and its SQL container, then try again.')
+    return
+  }
+  if (to === 'local' && cur?.localReady === false) {
+    $.ui.toast('The local SQL Server service (MSSQLSERVER) is not running. Start it, then try again.')
+    return
+  }
+  let answer = ''
   try {
-    const u = await $.session.usage()
+    answer = await $.ui.ask(
+      'CoreAPI is using your ' + from + ' DB. Switch to your ' + to + ' DB? This restarts CoreAPI on :' + opts.coreapi_port + ' (runs use-' + to + '-db.ps1).',
+      { header: 'Dragon', options: ['Switch to ' + to + ' db', 'Stay on ' + from + ' db'] },
+    )
+  } catch {
+    return
+  }
+  if (answer !== 'Switch to ' + to + ' db') return
+  switchingDb = true
+  setLight('coreapi', { ...cur, color: COLORS.working, value: 'switching', short: 'Restarting CoreAPI on the ' + to + ' DB (use-' + to + '-db.ps1)\u2026' }, await $.clock.now())
+  $.ui.invalidate('ui.render')
+  try {
+    const r = await $.process.run(
+      ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $.plugin.root + '\\scripts\\switch-db.ps1', '-Target', to, '-Dir', String(opts.db_scripts_dir ?? ''), '-Port', String(opts.coreapi_port)],
+      { timeoutMs: 240_000 },
+    )
+    const res = parseJson(r.stdout)
+    if (res?.ok) $.ui.toast('CoreAPI is back up on your ' + to + ' DB.')
+    else $.ui.toast('Switch to ' + to + ' DB did not finish: ' + shorten(res?.error ?? res?.tail ?? 'no answer from the script', 140))
+  } catch (err) {
+    $.ui.toast('Switch to ' + to + ' DB failed: ' + shorten(err?.message ?? err, 120))
+  } finally {
+    switchingDb = false
+    await poll($, 'coreapi', true)
+  }
+}
+
+// Advice Dragon has already announced this session; an item is re-armed once its condition clears
+const announced = new Set()
+let startBranch = ''
+let compacting = false
+
+// Context, spend and limits: refresh the three Use lights, announce new advice, and compact when asked to
+async function refreshContext($, { turnEnded } = {}) {
+  let u
+  try {
+    u = await $.session.usage()
     session.contextPct = u?.context?.percent
   } catch {
     session.contextPct = undefined
+    return
+  }
+  try {
+    const now = await $.clock.now()
+    // Spend: add what this session cost since the last look to today's total, kept across sessions in the store
+    const cost = u?.cost?.usd
+    const today = localDay(new Date(now))
+    let days = (await $.store.get('token-days')) ?? {}
+    if (typeof cost === 'number' && typeof u?.startedAt === 'number') {
+      // What each session has already been counted for, so a reload never double counts. A session that began today
+      // spent all of it today; one from an earlier day starts counting from now (its split by day is unknown).
+      const seen = (await $.store.get('token-sessions')) ?? {}
+      const key = String(u.startedAt)
+      const recorded = seen[key] ?? (localDay(new Date(u.startedAt)) === today ? 0 : cost)
+      const delta = Math.max(0, cost - recorded)
+      if (delta > 0 || seen[key] === undefined) {
+        const keepKeys = Object.keys({ ...seen, [key]: cost }).sort().slice(-40)
+        const next = { ...seen, [key]: cost }
+        await $.store.set('token-sessions', Object.fromEntries(keepKeys.map((k) => [k, next[k]])))
+      }
+      if (delta > 0) {
+        days = { ...days, [today]: Number(days[today] ?? 0) + delta }
+        const keep = Object.keys(days).sort().slice(-30)
+        days = Object.fromEntries(keep.map((k) => [k, days[k]]))
+        await $.store.set('token-days', days)
+      }
+    }
+    const day = dayStats(days, today)
+    setLight('ctx', ctxLight(session.contextPct), now)
+    setLight('day', dayLight(day), now)
+    setLight('limit', limitLight(u?.rateLimits, now), now)
+
+    if (!startBranch && lights.git?.branch) startBranch = lights.git.branch
+    const advice = tokenAdvice({
+      contextPct: session.contextPct,
+      startBranch,
+      branch: lights.git?.branch,
+      sessionMinutes: typeof u?.startedAt === 'number' ? (now - u.startedAt) / 60_000 : 0,
+      day,
+      limits: u?.rateLimits,
+    })
+    const ids = new Set(advice.map((a) => a.id))
+    for (const id of [...announced]) if (!ids.has(id)) announced.delete(id)
+    const fresh = advice.filter((a) => !announced.has(a.id))
+    for (const a of fresh) announced.add(a.id)
+    const auto = String(opts.token_coach) === 'auto' && turnEnded && !compacting && advice.some((a) => a.action === 'compact') && session.contextPct >= Number(opts.auto_compact_percent)
+    if (auto) {
+      compacting = true
+      const was = Math.round(session.contextPct)
+      // Wait for the turn to settle: a compact is refused while one runs
+      $.clock.after(2_000, async () => {
+        try {
+          const r = await $.session.compact({ instructions: 'Keep the current task, decisions made, file paths, and open TODOs.' })
+          if (!r?.skip) $.ui.toast('Dragon compacted your context (was ' + was + '% full).')
+        } catch {
+          // a turn started again or compaction was refused: the advice stays on the light
+        } finally {
+          compacting = false
+          await refreshContext($)
+        }
+      })
+    } else if (fresh.length) {
+      $.ui.toast('Dragon: ' + fresh[0].text)
+    }
+  } catch {
+    // The Use lights are advisory; a failed reading leaves the previous ones
+  } finally {
+    $.ui.invalidate('ui.render')
   }
 }
 
@@ -524,6 +663,7 @@ export function register(on, options) {
     for (const id of ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket']) $.clock.every(intervalMs(id), () => poll($, id))
     $.clock.every(10 * 60_000, () => loadSkills($))
     $.clock.every(60_000, () => checkSleepy($))
+    $.clock.every(60_000, () => refreshContext($))
     return result
   })
 
@@ -578,7 +718,7 @@ export function register(on, options) {
 
   on('turn.complete', async ($, e, next) => {
     if (e.agentId) return next(e)
-    await refreshContext($)
+    await refreshContext($, { turnEnded: true })
     setState($, e.reason === 'error' ? 'error' : 'idle')
     return next(e)
   })
@@ -708,7 +848,7 @@ export function register(on, options) {
       ],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'Use']
     const lightRow = (row) =>
       Box({
         key: 'drg-row-' + row,
@@ -719,15 +859,40 @@ export function register(on, options) {
           ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off')).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
+            const open = () => {
+              const url = lightUrl(s.id)
+              if (url) openUrl($, url)
+              else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })
+            }
+            // CoreAPI: the name still opens Swagger; the database text is its own target and offers the other database
+            const dbTarget = s.id === 'coreapi' ? dbSwitchTarget(l) : undefined
+            if (dbTarget) {
+              return Box({
+                key: 'drg-light-coreapi',
+                flexDirection: 'row',
+                children: [
+                  Button({
+                    key: 'drg-light-coreapi-open',
+                    plain: true,
+                    hover: { scope: 'drg-coreapi', underline: true },
+                    onPress: open,
+                    children: [Text({ color, children: ['\u25cf '] }), Text({ children: [s.label + ' '] })],
+                  }),
+                  Button({
+                    key: 'drg-light-coreapi-db',
+                    plain: true,
+                    hover: { scope: 'drg-coreapi-db', underline: true },
+                    onPress: () => switchDb($, dbTarget),
+                    children: [Text({ color, bold: true, children: [l.value] })],
+                  }),
+                ],
+              })
+            }
             return Button({
               key: 'drg-light-' + s.id,
               plain: true,
               hover: { scope: 'drg-' + s.id, underline: true },
-              onPress: () => {
-                const url = lightUrl(s.id)
-                if (url) openUrl($, url)
-                else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })
-              },
+              onPress: open,
               children: [
                 Text({ color, children: ['\u25cf '] }),
                 Text({ children: [s.label + ' '] }),
@@ -742,6 +907,7 @@ export function register(on, options) {
     const now = Date.now()
     const reveals = [
       { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: '' },
+      { scope: 'drg-coreapi-db', text: 'CoreAPI database: ' + (lights.coreapi?.value ?? '?'), more: dbSwitchTarget(lights.coreapi) ? 'Click to switch CoreAPI to your ' + dbSwitchTarget(lights.coreapi) + ' DB (asks first)' : '' },
       { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to print it in the chat' },
       ...SOURCES.map((s) => {
         const l = lights[s.id]
@@ -786,7 +952,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, lightRow(0), lightRow(1), lightRow(2), lightRow(3), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, lightRow(0), lightRow(1), lightRow(2), lightRow(3), lightRow(4), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
