@@ -7,6 +7,8 @@ import {
   parseGitStatus,
   gitLight,
   pipelineLight,
+  jiraLight,
+  prLight,
   seqLight,
   parseTestRun,
   isTestCommand,
@@ -55,6 +57,8 @@ const SEQ_EVENTS = JSON.stringify([{ Timestamp: '2026-11-16T19:41:08Z', Rendered
 
 // What a Bash tool call prints, for tests that run a test command
 let bashStdout = ''
+// Transcript lines the plugin printed with $.ui.log
+const logged: string[] = []
 
 // Everything session.start and the pollers need, answered in Claude Code's place
 function stubSession(on, asked: string[], answer: string, opened: string[] = []) {
@@ -67,8 +71,14 @@ function stubSession(on, asked: string[], answer: string, opened: string[] = [])
   on('session.root', () => ({ value: 'C:\\repo' }))
   on('session.usage', () => ({ value: { context: { tokens: 1000, window: 200000, percent: 12 } } }))
   on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', ($, e) => {
+    if (e.to !== 'debug') logged.push(e.text)
+    return { value: undefined }
+  })
   on('ui.render', () => ({ type: 'Text', props: {}, children: [''] }))
-  on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+  on('prompt.submit', ($, e) => {
+    return { text: e.text, context: e.context }
+  })
   on('process.run', ($, e) => {
     const argv = e.argv.join(' ')
     let stdout = ''
@@ -212,18 +222,46 @@ test('/dragon standup gathers Jira, PRs and commits', async ($, on) => {
   expect(out.text).toContain('abc1234 C3-1 Fix the thing')
 })
 
-test('pressing the band Standup button opens the pane with the standup in it', async ($, on) => {
+test('pressing the band Standup button prints the standup into the chat', async ($, on) => {
   const clock = stubSession(on, [], 'No thanks')
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+  logged.length = 0
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\repo' })
   await clock.advance(9_000)
 
   const ui = await $.ui.mount(BAND)
   await ui.press({ key: 'drg-standup-band' })
-  const pane = await $.ui.mount({ ...BAND, component: 'Pane', requestId: 'dragon', props: {} })
-  expect(await pane.find({ type: 'Text', text: /C3-1  \[In Progress\]  Do a thing/ })).toBeDefined()
-  await pane.unmount()
+  await clock.advance(100)
+  const printed = logged.join(' | ')
+  expect(printed).toContain('Standup since')
+  expect(printed).toContain('C3-1  [In Progress]  Do a thing')
   await ui.unmount()
+})
+
+test('lines with somewhere to go carry a link; a failed build links to its run', () => {
+  const runs = [
+    { build_number: 2905, created_on: '2026-11-11T04:32:10Z', state: { name: 'COMPLETED', result: { name: 'FAILED' } } },
+    { build_number: 2904, created_on: '2026-11-10T20:00:00Z', state: { name: 'COMPLETED', result: { name: 'SUCCESSFUL' } } },
+  ]
+  const ci = pipelineLight(runs, 'feat/x', 'keyhealthtech/phoenix')
+  expect(ci.value).toBe('failed')
+  // Pressing the light itself opens the failing run, and each run in the list links to its own page
+  expect(ci.url).toBe('https://bitbucket.org/keyhealthtech/phoenix/pipelines/results/2905')
+  expect(ci.detail[0]).toEqual({ text: '#2905  FAILED  2026-11-11 04:32', url: 'https://bitbucket.org/keyhealthtech/phoenix/pipelines/results/2905' })
+  expect(ci.detail[1].url).toContain('/results/2904')
+  // No repo known: plain text rather than a dead link
+  expect(pipelineLight(runs, 'feat/x').detail[0]).toBe('#2905  FAILED  2026-11-11 04:32')
+
+  const seq = seqLight([{ Id: 'event-1', Timestamp: '2026-11-16T19:41:08Z', RenderedMessage: 'Boom' }], 15, 50, 'http://localhost:5341/')
+  expect(seq.detail[0].url).toBe('http://localhost:5341/#/events?filter=' + encodeURIComponent("@Id = 'event-1'"))
+  expect(seq.url).toContain('http://localhost:5341/#/events?filter=')
+
+  const g = gitLight(parseGitStatus(GIT_STATUS)!, 'keyhealthtech/phoenix')
+  expect(g.detail[0].url).toBe('https://bitbucket.org/keyhealthtech/phoenix/branch/feat%2FC3-1-thing')
+  // A branch with no upstream is not on Bitbucket yet
+  expect(typeof gitLight(parseGitStatus('# branch.head x\n# branch.ab +0 -0')!, 'a/b').detail[0]).toBe('string')
+
+  expect(jiraLight({ data: { issues: [{ key: 'C3-1', summary: 'S', status: { name: 'Open' }, url: 'https://x/browse/C3-1' }] } }).detail[0].url).toBe('https://x/browse/C3-1')
+  expect(prLight({ data: { pullRequests: [{ title: 'T', url: 'https://bb/pr/1', repo: { id: 'r' } }] } }, 'r').detail[0].url).toBe('https://bb/pr/1')
 })
 
 test('/dragon sleep puts Dragon to sleep at once, and any activity wakes it', async ($, on) => {
@@ -273,6 +311,7 @@ test('pipeline light reads the newest run', () => {
   expect(pipelineLight(run('COMPLETED', 'FAILED'), 'b').value).toBe('failed')
   expect(pipelineLight(run('IN_PROGRESS'), 'b').value).toBe('running')
   expect(pipelineLight([], 'b').value).toBe('none')
+  expect(pipelineLight(run('COMPLETED', 'SUCCESSFUL'), 'development', undefined, true).short).toContain('none on development')
   expect(pipelineLight(undefined, 'b').value).toBe('?')
   expect(parseJsonAny('noise\n[{"a":1}]\n')).toEqual([{ a: 1 }])
   expect(parseJsonAny('{"data":1}')).toEqual({ data: 1 })
@@ -344,8 +383,8 @@ test('standup picks the previous working day and formats every section', () => {
     commits: ['abc Fix'],
     repoId: 'r',
   })
-  expect(text).toContain('C3-1  [Done]  Do a thing')
-  expect(text).toContain('Fix it  [merged, 3 comments]')
+  expect(text).toContain('C3-1  Done  Do a thing')
+  expect(text).toContain('merged   Fix it  (3 comments)')
   expect(text).not.toContain('Elsewhere')
-  expect(formatStandup({ since: new Date(), issues: undefined, prs: undefined, commits: undefined })).toContain('could not read Jira')
+  expect(formatStandup({ since: new Date(), issues: undefined, prs: undefined, commits: undefined })).toContain('Jira: could not read')
 })

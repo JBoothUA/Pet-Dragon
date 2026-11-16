@@ -57,6 +57,8 @@ Light colors:
 - Red: down.
 - Grey: off, not set up, or not checked yet.
 
+**Links.** In the `/dragon` pane, any detail line that has a page behind it is a clickable, underlined link (marked ↗) that opens in your browser: each Jira issue, each PR, each pipeline run (`#2905 FAILED …` opens that run on Bitbucket), each Seq error, the Swagger pages, and your branch. Pressing the **CI** light itself opens the newest run, so a red CI light goes straight to the failing build; the **Seq** light opens Seq filtered to errors.
+
 **Explanations.** Hover over Dragon or a light to see a short explanation on the third line. Hover needs mouse support in your terminal; it works best in fullscreen mode. `/dragon` always works. It opens a pane with every light's details, issue and PR lists, the color legend, and three buttons: **r** refreshes everything, **u** gathers your standup into the pane, and **s** turns skill suggestions on or off.
 
 ## Skill suggestions
@@ -80,7 +82,7 @@ Slash commands, short prompts, and prompts typed while Claude is working are nev
 
 ## Standup
 
-`/dragon standup` prints what changed since the previous working day (yesterday, or Friday on a Monday): your Jira issues updated, your Bitbucket PRs updated (open, merged or declined, in `pr_repo_id`'s repo), and your own commits across all local branches. The three sources run in parallel, and one that fails (say `twg` is logged out) says so without hiding the others. The **[ Standup ]** button at the end of the band's top line (and the pane's **u** button) opens `/dragon` and shows the same text there.
+`/dragon standup` prints what changed since the previous working day (yesterday, or Friday on a Monday): your Jira issues updated, your Bitbucket PRs updated (open, merged or declined, in `pr_repo_id`'s repo), and your own commits across all local branches. The three sources run in parallel, and one that fails (say `twg` is logged out) says so without hiding the others. The **[ Standup ]** button at the end of the band's top line prints the same text into the chat (a dim line, not sent to Claude). The pane's **u** button shows it inside `/dragon` instead.
 
 `/dragon sleep` puts Dragon to sleep at once instead of waiting for `sleepy_after_minutes`; typing anything wakes it.
 

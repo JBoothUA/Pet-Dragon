@@ -128,6 +128,7 @@ function setLight(id, light, checkedAt) {
 
 // Where clicking a light goes (opened in Chrome); undefined = open the /dragon pane instead
 function lightUrl(id) {
+  if (lights[id]?.url) return lights[id].url
   if (id === 'coreapi') return 'http://localhost:' + opts.coreapi_port + '/swagger'
   if (id === 'bff') return 'https://localhost:' + opts.bff_port + '/swagger'
   if (id === 'movedocs') return 'https://localhost:' + opts.movedocs_port + '/swagger'
@@ -208,7 +209,7 @@ async function poll($, id, force) {
       if (!repoRoot) setLight(key, gitLight(undefined), now)
       else {
         const r = await $.process.run(['git', '-C', repoRoot, 'status', '--porcelain=v2', '--branch'], { timeoutMs: 20_000 })
-        setLight(key, gitLight(r.exitCode === 0 ? parseGitStatus(r.stdout) : undefined), now)
+        setLight(key, gitLight(r.exitCode === 0 ? parseGitStatus(r.stdout) : undefined, opts.bitbucket_repo), now)
       }
     } else if (key === 'pipeline') {
       if (!lights.git?.branch) await poll($, 'git', true)
@@ -217,7 +218,18 @@ async function poll($, id, force) {
       const args = ['twg', 'bb', 'pipeline', 'query', '-w', workspace, '-r', repo, '-n', '5', '-o', 'json', '--output-summary', 'none']
       if (branch && !branch.startsWith('(')) args.push('--branch', branch)
       const r = await $.process.run(args, { timeoutMs: 120_000 })
-      setLight(key, pipelineLight(r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined, branch), now)
+      let runs = r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined
+      let anyBranch = false
+      // A branch with no runs of its own (development, a fresh branch) falls back to the latest run on any branch
+      if (Array.isArray(runs) && runs.length === 0 && args.includes('--branch')) {
+        const r2 = await $.process.run(args.slice(0, args.indexOf('--branch')), { timeoutMs: 120_000 })
+        const any = r2.exitCode === 0 ? parseJsonAny(r2.stdout) : undefined
+        if (Array.isArray(any) && any.length) {
+          runs = any
+          anyBranch = true
+        }
+      }
+      setLight(key, pipelineLight(runs, branch, opts.bitbucket_repo, anyBranch), now)
     } else if (key === 'seq') {
       const windowMin = Number(opts.seq_window_minutes)
       const from = new Date(now - windowMin * 60_000).toISOString()
@@ -230,7 +242,7 @@ async function poll($, id, force) {
       } catch {
         events = undefined
       }
-      setLight(key, seqLight(events, windowMin, ERROR_LIMIT), now)
+      setLight(key, seqLight(events, windowMin, ERROR_LIMIT, opts.seq_url), now)
     }
     if (shared) {
       if (lights[key]) await $.store.set('light:' + key, lights[key])
@@ -383,6 +395,19 @@ async function pressStandup($) {
   }
   standupBusy = false
   $.ui.invalidate('ui.render')
+}
+
+// The band's Standup button: gather it, then print it into the chat (a dim transcript line, not sent to the model)
+async function printStandup($) {
+  if (standupBusy) return
+  standupBusy = true
+  $.ui.toast('Dragon is gathering your standup…')
+  try {
+    $.ui.log(await runStandup($))
+  } catch (err) {
+    $.ui.log('Standup failed: ' + shorten(err?.message ?? err, 100))
+  }
+  standupBusy = false
 }
 
 // /dragon sleep: doze off now instead of waiting for sleepy_after_minutes. Any activity wakes it.
@@ -602,11 +627,9 @@ export function register(on, options) {
           key: 'drg-standup-band',
           plain: true,
           hover: { scope: 'drg-standup', underline: true },
-          onPress: () => {
-            $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })
-            pressStandup($)
-          },
-          children: [Text({ color: COLORS.ember, bold: true, children: [standupBusy ? '[ gathering\u2026 ]' : '[ Standup ]'] })],
+          // A plugin cannot run its own command or submit a leading-slash prompt, so print into the chat directly
+          onPress: () => printStandup($),
+          children: [Text({ color: COLORS.ember, bold: true, children: ['[ Standup ]'] })],
         }),
       ],
     })
@@ -645,7 +668,7 @@ export function register(on, options) {
     const now = Date.now()
     const reveals = [
       { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: '' },
-      { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to gather it in /dragon' },
+      { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to print it in the chat' },
       ...SOURCES.map((s) => {
         const l = lights[s.id]
         // Jira and PRs list just the ticket and its status; the count is already on the light
@@ -728,7 +751,19 @@ export function register(on, options) {
         }),
       )
       const detail = l?.detail ?? []
-      for (const d of detail.slice(0, 8)) rows.push(Text({ dimColor: true, wrap: 'truncate-end', children: ['    ' + d] }))
+      for (const [i, d] of detail.slice(0, 8).entries()) {
+        if (typeof d === 'string') rows.push(Text({ dimColor: true, wrap: 'truncate-end', children: ['    ' + d] }))
+        else {
+          rows.push(
+            Button({
+              key: 'drg-link-' + s.id + '-' + i,
+              plain: true,
+              onPress: () => openUrl($, d.url),
+              children: [Text({ color: COLORS.ember, underline: true, wrap: 'truncate-end', children: ['    ' + d.text + ' ↗'] })],
+            }),
+          )
+        }
+      }
       if (detail.length > 8) rows.push(Text({ dimColor: true, children: ['    \u2026and ' + (detail.length - 8) + ' more'] }))
     }
 

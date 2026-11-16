@@ -171,10 +171,14 @@ export function ago(ms, now) {
 }
 
 // ---- Source results -> light. Each returns { color, value, short, detail[] } ----
+// A detail entry is a string, or { text, url } when the line has somewhere to go (the pane makes it a link).
+// A light may also carry `url`: where pressing the light goes instead of its default.
+export const link = (text, url) => (url ? { text, url } : text)
+export const detailText = (d) => (typeof d === 'string' ? d : d.text)
 
 export function coreApiLight(p, port) {
   if (!p) return { color: COLORS.grey, value: '?', short: 'CoreAPI probe failed to run', detail: [] }
-  const detail = ['Swagger: http://localhost:' + port + '/swagger']
+  const detail = [link('Swagger: http://localhost:' + port + '/swagger', 'http://localhost:' + port + '/swagger')]
   if (p.up) {
     detail.push('Process: ' + (p.process ?? '?') + ' pid ' + p.pid + (p.startTime ? ', started ' + p.startTime : ''))
     if (p.exePath) detail.push('Exe: ' + p.exePath)
@@ -195,7 +199,7 @@ export function coreApiLight(p, port) {
 
 export function serviceLight(name, p, port) {
   if (!p) return { color: COLORS.grey, value: '?', short: name + ' probe failed to run', detail: [] }
-  const detail = ['Swagger: https://localhost:' + port + '/swagger']
+  const detail = [link('Swagger: https://localhost:' + port + '/swagger', 'https://localhost:' + port + '/swagger')]
   if (!p.up) return { color: COLORS.grey, value: 'off', short: name + ' is not running (nothing on :' + port + ')', detail }
   detail.push('Process: ' + (p.process ?? '?') + ' pid ' + p.pid)
   return { color: COLORS.green, value: 'up', short: name + ' is running on :' + port + ' (' + (p.process ?? 'process') + ' pid ' + p.pid + ')', detail }
@@ -204,7 +208,7 @@ export function serviceLight(name, p, port) {
 export function jiraLight(json) {
   const issues = json?.data?.issues
   if (!Array.isArray(issues)) return { color: COLORS.grey, value: '?', short: 'Could not read Jira (is twg logged in?)', detail: [] }
-  const detail = issues.map((i) => i.key + '  ' + (i.status?.name ?? '') + '  ' + (i.summary ?? ''))
+  const detail = issues.map((i) => link(i.key + '  ' + (i.status?.name ?? '') + '  ' + (i.summary ?? ''), i.url))
   const brief = issues.map((i) => i.key + ' ' + (i.status?.name ?? '?'))
   const inReview = issues.filter((i) => /review/i.test(i.status?.name ?? '')).length
   const short = issues.length + ' open issue(s) assigned to you' + (inReview ? ', ' + inReview + ' in review' : '')
@@ -219,7 +223,7 @@ export function prLight(json, repoId) {
   const others = all.length - prs.length
   const detail = prs.map((p) => {
     const reviewers = Array.isArray(p.reviewers) ? p.reviewers.length : 0
-    return p.title + ' (' + (p.ageDays ?? '?') + 'd, ' + (p.commentCount ?? 0) + ' comments, ' + reviewers + ' reviewer(s), ' + (p.sourceBranch ?? '?') + ' → ' + (p.destinationBranch ?? '?') + ')'
+    return link(p.title + ' (' + (p.ageDays ?? '?') + 'd, ' + (p.commentCount ?? 0) + ' comments, ' + reviewers + ' reviewer(s), ' + (p.sourceBranch ?? '?') + ' → ' + (p.destinationBranch ?? '?') + ')', p.url)
   })
   if (others > 0) detail.push(others + ' more open PR(s) in other repos are not counted')
   const brief = prs.map((p) => {
@@ -277,7 +281,8 @@ export function parseGitStatus(text) {
   return out
 }
 
-export function gitLight(g) {
+// repo: workspace/repo, so the branch line can link to the branch on Bitbucket
+export function gitLight(g, repo) {
   if (!g) return { color: COLORS.grey, value: '?', short: 'Not a git repository (or git failed)', detail: [], paths: [] }
   const dirty = g.changed + g.untracked
   const bits = []
@@ -285,7 +290,7 @@ export function gitLight(g) {
   if (g.ahead) bits.push('↑' + g.ahead)
   if (g.behind) bits.push('↓' + g.behind)
   const detail = [
-    'Branch: ' + g.branch + (g.upstream ? ' → ' + g.upstream : ' (no upstream)'),
+    link('Branch: ' + g.branch + (g.upstream ? ' → ' + g.upstream : ' (no upstream)'), repo && g.upstream ? 'https://bitbucket.org/' + repo + '/branch/' + encodeURIComponent(g.branch) : undefined),
     g.changed + ' changed, ' + g.untracked + ' untracked, ' + g.ahead + ' ahead, ' + g.behind + ' behind',
   ]
   const short = g.branch + ': ' + (bits.length ? [dirty ? dirty + ' uncommitted' : '', g.ahead ? g.ahead + ' to push' : '', g.behind ? g.behind + ' behind upstream' : ''].filter(Boolean).join(', ') : 'clean and in sync')
@@ -294,19 +299,22 @@ export function gitLight(g) {
 }
 
 // twg bb pipeline query -o json prints an array of pipeline runs, newest first
-export function pipelineLight(runs, branch) {
+// repo: workspace/repo, so each run (and the light itself) can link to its page on Bitbucket
+export function pipelineLight(runs, branch, repo, anyBranch) {
   if (!Array.isArray(runs)) return { color: COLORS.grey, value: '?', short: 'Could not read Bitbucket Pipelines (is twg logged in?)', detail: [] }
-  const where = branch ? ' on ' + branch : ''
+  const where = anyBranch ? ' on ' + (runs[0]?.target?.ref_name ?? 'another branch') + ' (none on ' + branch + ')' : branch ? ' on ' + branch : ''
   if (runs.length === 0) return { color: COLORS.grey, value: 'none', short: 'No pipeline runs' + where, detail: [] }
   const r = runs[0]
   const state = r.state?.name ?? ''
   const result = r.state?.result?.name ?? ''
-  const detail = runs.slice(0, 5).map((x) => '#' + x.build_number + '  ' + (x.state?.result?.name ?? x.state?.name ?? '?') + '  ' + (x.created_on ?? '').slice(0, 16).replace('T', ' '))
+  const runUrl = (x) => (repo ? 'https://bitbucket.org/' + repo + '/pipelines/results/' + x.build_number : undefined)
+  const detail = runs.slice(0, 5).map((x) => link('#' + x.build_number + '  ' + (x.state?.result?.name ?? x.state?.name ?? '?') + '  ' + (x.created_on ?? '').slice(0, 16).replace('T', ' '), runUrl(x)))
+  const url = runUrl(r)
   const tag = '#' + r.build_number
-  if (state === 'COMPLETED' && result === 'SUCCESSFUL') return { color: COLORS.green, value: 'passed', short: 'Latest pipeline ' + tag + where + ' passed', detail, build: r.build_number }
-  if (state === 'COMPLETED' && result === 'STOPPED') return { color: COLORS.grey, value: 'stopped', short: 'Latest pipeline ' + tag + where + ' was stopped', detail, build: r.build_number }
-  if (state === 'COMPLETED') return { color: COLORS.red, value: 'failed', short: 'Latest pipeline ' + tag + where + ' ' + (result || 'failed').toLowerCase(), detail, build: r.build_number }
-  return { color: COLORS.working, value: 'running', short: 'Pipeline ' + tag + where + ' is ' + (state || 'running').toLowerCase().replace('_', ' '), detail, build: r.build_number }
+  if (state === 'COMPLETED' && result === 'SUCCESSFUL') return { color: COLORS.green, value: 'passed', short: 'Latest pipeline ' + tag + where + ' passed', detail, build: r.build_number, url }
+  if (state === 'COMPLETED' && result === 'STOPPED') return { color: COLORS.grey, value: 'stopped', short: 'Latest pipeline ' + tag + where + ' was stopped', detail, build: r.build_number, url }
+  if (state === 'COMPLETED') return { color: COLORS.red, value: 'failed', short: 'Latest pipeline ' + tag + where + ' ' + (result || 'failed').toLowerCase(), detail, build: r.build_number, url }
+  return { color: COLORS.working, value: 'running', short: 'Pipeline ' + tag + where + ' is ' + (state || 'running').toLowerCase().replace('_', ' '), detail, build: r.build_number, url }
 }
 
 // A Bash tool result has no exit code, so a test run is read off the runner's own summary line.
@@ -348,13 +356,18 @@ export function testLight(run, command) {
 }
 
 // events: Seq's /api/events array, newest first. windowMinutes only words the message; Seq filters by time.
-export function seqLight(events, windowMinutes, limit) {
+// seqUrl: where Seq is served, so an event line (and the light) can open it in Seq
+export function seqLight(events, windowMinutes, limit, seqUrl) {
   if (!Array.isArray(events)) return { color: COLORS.grey, value: 'off', short: 'Seq did not answer (is it running?)', detail: [] }
   const n = events.length
   const label = n >= limit ? n + '+' : String(n)
   if (n === 0) return { color: COLORS.green, value: '0', short: 'No errors in Seq in the last ' + windowMinutes + ' minutes', detail: [] }
-  const detail = events.slice(0, 8).map((e) => (e.Timestamp ?? '').slice(11, 19) + '  ' + shorten(e.RenderedMessage ?? e.MessageTemplate ?? JSON.stringify(e.Properties ?? {}), 110))
-  return { color: COLORS.red, value: label, short: label + ' error(s) in Seq in the last ' + windowMinutes + ' minutes', detail }
+  const base = seqUrl ? String(seqUrl).replace(/\/+$/, '') + '/#/events?filter=' : undefined
+  const detail = events.slice(0, 8).map((e) =>
+    link((e.Timestamp ?? '').slice(11, 19) + '  ' + shorten(e.RenderedMessage ?? e.MessageTemplate ?? JSON.stringify(e.Properties ?? {}), 110), base && e.Id ? base + encodeURIComponent("@Id = '" + e.Id + "'") : undefined),
+  )
+  const url = base ? base + encodeURIComponent("@Level in ['Error', 'Fatal']") : undefined
+  return { color: COLORS.red, value: label, short: label + ' error(s) in Seq in the last ' + windowMinutes + ' minutes', detail, url }
 }
 
 // ---- Standup ----
@@ -373,26 +386,34 @@ export function standupSince(now) {
 }
 
 // since: a Date; issues from the Jira query, prs from `twg prs query`, commits as `sha subject` lines.
+// Compact on purpose: a table per source, empty sources collapse to one line, commits show a count and the newest few.
 export function formatStandup({ since, issues, prs, commits, repoId }) {
-  const when = since.toISOString().slice(0, 16).replace('T', ' ') + 'Z'
-  const lines = ['Standup since ' + when, '']
+  const day = since.toISOString().slice(0, 10)
+  const lines = ['Standup since ' + day]
+  const pad = (v, n) => String(v).padEnd(n)
   const jira = Array.isArray(issues) ? issues : undefined
-  lines.push('Jira (' + (jira ? jira.length : '?') + ')')
-  if (!jira) lines.push('  could not read Jira (is twg logged in?)')
-  else if (jira.length === 0) lines.push('  nothing updated')
-  else for (const i of jira) lines.push('  ' + i.key + '  [' + (i.status?.name ?? '?') + ']  ' + shorten(i.summary, 90))
-  lines.push('')
+  if (!jira) lines.push('Jira: could not read (is twg logged in?)')
+  else if (jira.length === 0) lines.push('Jira: nothing updated')
+  else {
+    lines.push('Jira (' + jira.length + ')')
+    const w = Math.max(...jira.map((i) => String(i.status?.name ?? '?').length))
+    const kw = Math.max(...jira.map((i) => String(i.key).length)) + 2
+    for (const i of jira) lines.push('  ' + pad(i.key, kw) + pad(i.status?.name ?? '?', w + 2) + shorten(i.summary, 60))
+  }
   const all = Array.isArray(prs) ? (repoId ? prs.filter((p) => p.repo?.id === repoId) : prs) : undefined
-  lines.push('Pull requests (' + (all ? all.length : '?') + ')')
-  if (!all) lines.push('  could not read Bitbucket PRs (is twg logged in?)')
-  else if (all.length === 0) lines.push('  nothing updated')
-  else for (const p of all) lines.push('  ' + shorten(p.title, 80) + '  [' + String(p.state ?? '?').toLowerCase() + ', ' + (p.commentCount ?? 0) + ' comments]')
-  lines.push('')
-  lines.push('Commits (' + (commits ? commits.length : '?') + ')')
-  if (!commits) lines.push('  could not read git log')
-  else if (commits.length === 0) lines.push('  none')
-  else for (const c of commits.slice(0, 15)) lines.push('  ' + shorten(c, 100))
-  if (commits && commits.length > 15) lines.push('  …and ' + (commits.length - 15) + ' more')
+  if (!all) lines.push('PRs: could not read (is twg logged in?)')
+  else if (all.length === 0) lines.push('PRs: nothing updated')
+  else {
+    lines.push('PRs (' + all.length + ')')
+    for (const p of all) lines.push('  ' + pad(String(p.state ?? '?').toLowerCase(), 9) + shorten(p.title, 60) + (p.commentCount ? '  (' + p.commentCount + ' comments)' : ''))
+  }
+  if (!commits) lines.push('Commits: could not read git log')
+  else if (commits.length === 0) lines.push('Commits: none')
+  else {
+    lines.push('Commits (' + commits.length + ')')
+    for (const c of commits.slice(0, 3)) lines.push('  ' + shorten(c, 70))
+    if (commits.length > 3) lines.push('  …and ' + (commits.length - 3) + ' more')
+  }
   return lines.join('\n')
 }
 
