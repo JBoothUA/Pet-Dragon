@@ -435,6 +435,17 @@ export function limitLight(limits, nowMs) {
   return { color: usageColor(top), value: Math.round(top) + '%', short: name(worst.kind) + ' is ' + worst.percentUsed + '% used' + (worst.resetsAt ? ' (resets in ' + untilReset(worst.resetsAt, nowMs) + ')' : ''), detail, top }
 }
 
+// This session's own cost and burn rate
+export function sessLight(usd, startedAt, nowMs) {
+  if (typeof usd !== 'number') return { color: COLORS.grey, value: '?', short: 'Session cost is not known yet (it appears after the first reply)', detail: [] }
+  const mins = typeof startedAt === 'number' ? Math.max(1, Math.round((nowMs - startedAt) / 60_000)) : undefined
+  const span = mins === undefined ? '' : mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm'
+  const rate = mins !== undefined && mins >= 10 ? usd / (mins / 60) : undefined
+  const v = usd < 10 ? '$' + usd.toFixed(2) : '$' + Math.round(usd)
+  const short = 'This session has cost $' + usd.toFixed(2) + (span ? ' over ' + span : '') + (rate !== undefined ? ' (about $' + rate.toFixed(2) + ' an hour)' : '')
+  return { color: COLORS.teal, value: v, short, detail: ['Cost of this session alone; Today adds up every session.'] }
+}
+
 // What to tell the user right now. Each item has a stable id so it is announced once and re-armed when it clears.
 // s = { contextPct, startBranch, branch, sessionMinutes, day, limits }
 export function tokenAdvice(s) {

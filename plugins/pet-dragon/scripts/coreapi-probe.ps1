@@ -72,6 +72,21 @@ if ($listen) {
   $result.exePath = $proc.Path
   $result.startTime = if ($proc.StartTime) { $proc.StartTime.ToString('HH:mm:ss') } else { $null }
 
+  $dockerUp0 = [bool]$result.dockerSql -and $result.dockerSql -ne 'daemon-off'
+  # Ground truth for the local server: does it hold a session from this very process? Shared memory ("lpc:.", what
+  # use-local-db.ps1 sets) leaves no TCP trace, and the config files cannot see the env vars the process was started with.
+  if ($result.sqlService -eq 'Running') {
+    try {
+      $cn = New-Object System.Data.SqlClient.SqlConnection 'Data Source=lpc:.;Initial Catalog=master;Integrated Security=True;TrustServerCertificate=True;Connect Timeout=3'
+      $cn.Open()
+      $cmd = $cn.CreateCommand()
+      $cmd.CommandText = "select count(*) from sys.dm_exec_sessions where host_process_id = $($listen.OwningProcess) and program_name like '%SqlClient%'"
+      $n = [int]$cmd.ExecuteScalar()
+      $cn.Dispose()
+      if ($n -gt 0) { $result.db = 'local'; $result.dbEvidence += "$n session(s) from this process on the local SQL Server" }
+    } catch { }
+  }
+
   # Which process owns the SQL listener on 1433: sqlservr = local install, docker/wsl relay = container
   # Docker Desktop shows as two listeners (wslrelay + com.docker.backend), so look at every owner, not the first
   $sqlOwner = $null
@@ -80,15 +95,27 @@ if ($listen) {
   elseif ($owners.Count -gt 0) { $sqlOwner = $owners -join ',' }
 
   $conns = @(Get-NetTCPConnection -OwningProcess $listen.OwningProcess -State Established | Where-Object RemotePort -eq 1433)
-  if ($conns.Count -gt 0) {
+  if ($result.db -eq 'unknown' -and $conns.Count -gt 0) {
     $result.dbEvidence += "CoreAPI has $($conns.Count) TCP connection(s) to :1433"
     if ($sqlOwner -match '^sqlservr$') { $result.db = 'local'; $result.dbEvidence += 'port 1433 is owned by sqlservr' }
     elseif ($sqlOwner -match 'docker|wslrelay|vpnkit') { $result.db = 'docker'; $result.dbEvidence += "port 1433 is owned by $sqlOwner" }
     elseif ("$($conns[0].RemoteAddress)" -notmatch '^(127\.|::1|0\.0\.0\.0)') { $result.db = 'remote'; $result.dbEvidence += "remote $($conns[0].RemoteAddress)" }
   }
 
+  # No connection yet: trust the marker Dragon wrote when it last switched databases, if it was for this very process
+  if ($result.db -eq 'unknown') {
+    $mf = Join-Path $env:LOCALAPPDATA 'pet-dragon\core-db.json'
+    if (Test-Path $mf) {
+      $m = Get-Content $mf -Raw | ConvertFrom-Json
+      if ($m -and [int]$m.pid -eq [int]$listen.OwningProcess -and ($m.target -eq 'local' -or $m.target -eq 'docker')) {
+        $result.db = $m.target
+        $result.dbEvidence += "started by use-$($m.target)-db.ps1 at $($m.at); no connection yet to confirm"
+      }
+    }
+  }
+
   # An explicit port (".,1433") means TCP even to this machine, so the listener's owner is the answer with no open connection
-  if ($result.db -eq 'unknown' -and $sqlOwner -and "$($result.dataSource)" -match ',1433$') {
+  if ($result.db -eq 'unknown' -and $sqlOwner -and "$($result.dataSource)" -match ',1433$' -and -not ($result.sqlService -eq 'Running' -and $dockerUp0)) {
     if ($sqlOwner -match '^sqlservr$') { $result.db = 'local'; $result.dbEvidence += 'port 1433 is owned by sqlservr' }
     elseif ($sqlOwner -match 'docker|wslrelay|vpnkit') { $result.db = 'docker'; $result.dbEvidence += "port 1433 is owned by $sqlOwner" }
   }
@@ -107,7 +134,7 @@ if ($listen) {
     } elseif ($ds -and -not $isLocalName) {
       $result.db = 'remote'; $result.dbEvidence += "Data Source=$ds"
     } else {
-      $result.dbEvidence += 'no TCP evidence; could not tell'
+      $result.dbEvidence += $(if ($result.sqlService -eq 'Running' -and $dockerUp0) { 'local SQL and Docker SQL are both up and CoreAPI has no connection yet; cannot tell' } else { 'no TCP evidence; could not tell' })
     }
   }
 }

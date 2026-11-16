@@ -27,6 +27,7 @@ import {
   dayStats,
   dayLight,
   limitLight,
+  sessLight,
   tokenAdvice,
   reviewLight,
   mergedLight,
@@ -103,11 +104,12 @@ const SOURCES = [
   { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, parent: 'radar' },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
+  { id: 'sess', label: 'Sess', title: 'This session', row: 4 },
   { id: 'limit', label: 'Limit', title: 'Usage limits', row: 4 },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day', 'limit'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day', 'sess', 'limit'])
 const ERROR_LIMIT = 50
 
 let opts = { ...DEFAULTS }
@@ -437,6 +439,7 @@ async function refreshContext($, { turnEnded } = {}) {
     const day = dayStats(days, today)
     setLight('ctx', ctxLight(session.contextPct), now)
     setLight('day', dayLight(day), now)
+    setLight('sess', sessLight(u?.cost?.usd, u?.startedAt, now), now)
     setLight('limit', limitLight(u?.rateLimits, now), now)
 
     if (!startBranch && lights.git?.branch) startBranch = lights.git.branch
@@ -856,7 +859,7 @@ export function register(on, options) {
         columnGap: 2,
         children: [
           Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
-          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off')).map((s) => {
+          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off') && !(s.id === 'limit' && lights.limit?.value === 'n/a')).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
             const open = () => {

@@ -17,6 +17,7 @@ import {
   dayStats,
   dayLight,
   limitLight,
+  sessLight,
   tokenAdvice,
   reviewLight,
   mergedLight,
@@ -518,4 +519,13 @@ test('Core light says which database it uses and whether the other is ready to s
   expect(docker.value).toBe('docker db')
   expect(docker.dockerReady).toBe(true)
   expect(docker.localReady).toBe(false)
+})
+
+test('session light shows cost and burn rate', () => {
+  const now = Date.parse('2026-11-16T12:00:00Z')
+  const l = sessLight(3.456, now - 90 * 60_000, now)
+  expect(l.value).toBe('$3.46')
+  expect(l.short).toBe('This session has cost $3.46 over 1h 30m (about $2.30 an hour)')
+  expect(sessLight(25, now - 5 * 60_000, now).short).not.toContain('an hour')
+  expect(sessLight(undefined, now, now).value).toBe('?')
 })
