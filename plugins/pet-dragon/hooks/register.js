@@ -107,6 +107,8 @@ const SOURCES = [
   { id: 'sess', label: 'Sess', title: 'This session', row: 4 },
   { id: 'limit', label: 'Limit', title: 'Usage limits', row: 4 },
 ]
+// Usage-limit windows only exist for subscription accounts (Pro/Max); on Enterprise or API billing there is nothing to show
+const noLimitData = (s) => s.id === 'limit' && (!lights.limit || lights.limit.value === 'n/a')
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
 const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day', 'sess', 'limit'])
@@ -648,7 +650,10 @@ export function register(on, options) {
       const cached = await $.store.get('light:' + s.id)
       if (cached) lights[s.id] = cached
     }
-    setLight('tests', testLight(undefined), await $.clock.now())
+    // The last test run Claude saw in this repo, from any earlier session
+    const lastTest = await $.store.get('last-test:' + repoRoot)
+    const startNow = await $.clock.now()
+    setLight('tests', lastTest?.run ? testLight(lastTest.run, lastTest.command, lastTest.at, startNow) : testLight(undefined), startNow)
     suggestionsOff = opts.skill_suggestions === 'off' || (await $.store.get('suggestions-off')) === true
     affinity = (await $.store.get('skill-affinity')) ?? {}
     lastActivity = Date.now()
@@ -705,7 +710,11 @@ export function register(on, options) {
       if (testCommand) {
         const out = result?.result
         const run = parseTestRun(testCommand, typeof out === 'string' ? out : [out?.stdout, out?.stderr].filter(Boolean).join('\n'))
-        if (run) setLight('tests', testLight(run, testCommand), await $.clock.now())
+        if (run) {
+          const at = await $.clock.now()
+          setLight('tests', testLight(run, testCommand, at, at), at)
+          await $.store.set('last-test:' + repoRoot, { run, command: testCommand, at })
+        }
       }
       return result
     } finally {
@@ -859,7 +868,7 @@ export function register(on, options) {
         columnGap: 2,
         children: [
           Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
-          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off') && !(s.id === 'limit' && lights.limit?.value === 'n/a')).map((s) => {
+          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off') && !noLimitData(s)).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
             const open = () => {
@@ -981,7 +990,7 @@ export function register(on, options) {
     )
     rows.push(Text({ children: [' '] }))
 
-    for (const s of SOURCES) {
+    for (const s of SOURCES.filter((x) => !noLimitData(x))) {
       const l = lights[s.id]
       rows.push(
         Text({

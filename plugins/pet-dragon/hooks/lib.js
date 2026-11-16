@@ -352,11 +352,15 @@ export function parseTestRun(command, output) {
   return undefined
 }
 
-export function testLight(run, command) {
-  if (!run) return { color: COLORS.grey, value: 'not run', short: 'No test run seen yet. This light shows the result of tests Claude runs in this session (dotnet test, jest, k6, playwright); it is not a CI result', detail: [] }
-  const detail = [run.runner + ': ' + run.passed + ' passed, ' + run.failed + ' failed', command ? 'Command: ' + shorten(command, 100) : ''].filter(Boolean)
-  if (run.failed > 0) return { color: COLORS.red, value: run.failed + ' fail', short: run.runner + ' run: ' + run.failed + ' failed, ' + run.passed + ' passed', detail }
-  return { color: COLORS.green, value: run.passed + ' pass', short: run.runner + ' run: ' + run.passed + ' passed', detail }
+// at / nowMs: when the run happened and now, so a run remembered from an earlier session shows its age
+export function testLight(run, command, at, nowMs) {
+  if (!run) return { color: COLORS.grey, value: 'not run', short: 'No test run recorded yet. Dragon records every test run Claude starts (dotnet test, jest, k6, playwright) and remembers the last one between sessions; it cannot see runs from another terminal', detail: [] }
+  const when = typeof at === 'number' && typeof nowMs === 'number' ? ago(at, nowMs) : ''
+  const stale = typeof at === 'number' && typeof nowMs === 'number' && nowMs - at > 24 * 3_600_000
+  const detail = [run.runner + ': ' + run.passed + ' passed, ' + run.failed + ' failed' + (when ? ' (' + when + ')' : ''), command ? 'Command: ' + shorten(command, 100) : ''].filter(Boolean)
+  const tail = when ? ', ' + when + (stale ? ' (over a day old)' : '') : ''
+  if (run.failed > 0) return { color: COLORS.red, value: run.failed + ' fail', short: run.runner + ' run: ' + run.failed + ' failed, ' + run.passed + ' passed' + tail, detail }
+  return { color: stale ? COLORS.amber : COLORS.green, value: run.passed + ' pass', short: run.runner + ' run: ' + run.passed + ' passed' + tail, detail }
 }
 
 // events: Seq's /api/events array, newest first. windowMinutes only words the message; Seq filters by time.

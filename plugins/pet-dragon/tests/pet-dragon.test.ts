@@ -227,7 +227,7 @@ test('the repo row shows git, pipeline and Seq lights after the first polls', as
   expect(await ui.find({ type: 'Text', text: /Git: feat\/C3-1-thing: 2 uncommitted, 2 to push/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Pipelines: Latest pipeline #3115 on feat\/C3-1-thing passed/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Seq errors: 1 error\(s\) in Seq/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Tests: No test run seen yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Tests: No test run recorded yet/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -528,4 +528,18 @@ test('session light shows cost and burn rate', () => {
   expect(l.short).toBe('This session has cost $3.46 over 1h 30m (about $2.30 an hour)')
   expect(sessLight(25, now - 5 * 60_000, now).short).not.toContain('an hour')
   expect(sessLight(undefined, now, now).value).toBe('?')
+})
+
+test('Tests light remembers the last run and shows how old it is', () => {
+  const now = Date.parse('2026-11-16T12:00:00Z')
+  const run = { runner: 'dotnet', passed: 1191, failed: 0 }
+  const fresh = testLight(run, 'dotnet test', now - 2 * 3_600_000, now)
+  expect(fresh.value).toBe('1191 pass')
+  expect(fresh.short).toBe('dotnet run: 1191 passed, 2h ago')
+  expect(fresh.color).toBe('#3ddc84')
+  const old = testLight(run, 'dotnet test', now - 30 * 3_600_000, now)
+  expect(old.color).toBe('#ffc107')
+  expect(old.short).toContain('over a day old')
+  expect(testLight({ ...run, failed: 2 }, 'dotnet test', now, now).color).toBe('#ff5252')
+  expect(testLight(undefined).short).toContain('remembers the last one between sessions')
 })
