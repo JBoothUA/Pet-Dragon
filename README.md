@@ -36,6 +36,7 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 
 | Light | Shows | Source |
 |---|---|---|
+| UI | Whether the phoenix-ui dev server is listening on `ui_port` (5173). Click to open it | Port probe |
 | Core | Whether CoreAPI is up, and whether it points at **local db**, **docker db**, or a remote db | `scripts/coreapi-probe.ps1` checks the listener on the port, the process's environment, user secrets, and appsettings, then the MSSQLSERVER service and the Docker SQL container |
 | BFF | Whether the BFF is running (green **up**) or not (grey **off**) | `scripts/ports-probe.ps1`: is anything listening on `bff_port` |
 | MD | Whether the MoveDocs API is running (green **up**) or not (grey **off**) | `scripts/ports-probe.ps1`: is anything listening on `movedocs_port` |
@@ -45,8 +46,9 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | Teams | Whether Teams is running (green) or not (grey). It does not count unread chats: Teams has no local API for that | `Get-Process ms-teams` |
 | Git | Your branch in the session's repo: uncommitted files (`2~`), commits to push (`↑1`), commits behind upstream (`↓3`, amber), or **clean** | `git status --porcelain=v2 --branch`. Its changed files also feed skill suggestions |
 | CI | The newest Bitbucket Pipelines run for your current branch: **passed**, **failed**, **running**, **stopped** or **none**. Click to open the pipelines page | `twg bb pipeline query` for `bitbucket_repo` |
-| Tests | The last test run Claude started this session: `dotnet test`, `npm test`/jest, `k6 run`, `playwright test`. It reads the runner's own summary line, so it cannot see runs you start in another terminal | The Bash tool's output |
-| Seq | Error and Fatal events in the last `seq_window_minutes`, capped at **50+**. Click to open Seq | Seq's HTTP API at `seq_url` |
+| Tests | The last test run Claude started this session: `dotnet test`, `npm test`/jest, `k6 run`, `playwright test`. It reads the runner's own summary line, so it cannot see runs you start in another terminal | The Bash tool's output | Shows **not run** until Claude runs one; it is not a CI result.
+| Logs (Seq) | Error and Fatal events in the last `seq_window_minutes`, capped at **50+**. Seq is the local log viewer the APIs write to (port 5341); grey **off** just means it is not running. Click to open Seq | Seq's HTTP API at `seq_url` |
+| AI | Exceptions / failed requests in Application Insights over the last `appinsights_window_minutes` (default QA, `mvdc-phx-ai-qa`), shown as `173/40`. Green at 0, amber otherwise. Needs `az` installed and logged in | `az monitor app-insights query` via `scripts/insights-probe.ps1` |
 
 Light colors:
 

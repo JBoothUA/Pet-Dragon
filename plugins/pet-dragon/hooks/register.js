@@ -21,6 +21,7 @@ import {
   gitLight,
   pipelineLight,
   seqLight,
+  insightsLight,
   isTestCommand,
   parseTestRun,
   testLight,
@@ -56,6 +57,11 @@ const DEFAULTS = {
   seq_api_key: '',
   seq_poll_seconds: 60,
   seq_window_minutes: 15,
+  ui_port: 5173,
+  appinsights_app_id: 'dd3c06db-db3f-4802-b31c-2b6cd060384b',
+  appinsights_name: 'mvdc-phx-ai-qa',
+  appinsights_window_minutes: 15,
+  appinsights_poll_minutes: 5,
   skill_suggestions: 'ask',
   skill_min_score: 2,
   // twg returns PRs from every repo you authored in; only this one (phoenix) is counted
@@ -69,6 +75,7 @@ const SOURCES = [
   { id: 'coreapi', label: 'Core', title: 'CoreAPI', row: 0 },
   { id: 'bff', label: 'BFF', title: 'BFF', row: 0, parent: 'coreapi' },
   { id: 'movedocs', label: 'MD', title: 'MoveDocs API', row: 0, parent: 'coreapi' },
+  { id: 'ui', label: 'UI', title: 'phoenix-ui dev server', row: 0, parent: 'coreapi' },
   { id: 'jira', label: 'Jira', title: 'Jira', row: 1 },
   { id: 'bitbucket', label: 'PRs', title: 'PRs', row: 1 },
   { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1 },
@@ -76,7 +83,8 @@ const SOURCES = [
   { id: 'git', label: 'Git', title: 'Git', row: 2 },
   { id: 'pipeline', label: 'CI', title: 'Pipelines', row: 2 },
   { id: 'tests', label: 'Tests', title: 'Tests', row: 2 },
-  { id: 'seq', label: 'Seq', title: 'Seq errors', row: 2 },
+  { id: 'seq', label: 'Logs', title: 'Seq errors', row: 2 },
+  { id: 'insights', label: 'AI', title: 'App Insights', row: 2 },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
@@ -114,6 +122,7 @@ function intervalMs(id) {
   if (id === 'git') return Number(opts.git_poll_seconds) * 1000
   if (id === 'pipeline') return Number(opts.pipeline_poll_minutes) * 60_000
   if (id === 'seq') return Number(opts.seq_poll_seconds) * 1000
+  if (id === 'insights') return Number(opts.appinsights_poll_minutes) * 60_000
   return Number(opts.bitbucket_poll_minutes) * 60_000
 }
 
@@ -136,6 +145,8 @@ function lightUrl(id) {
   if (id === 'bitbucket') return opts.pr_list_url
   if (id === 'pipeline') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
   if (id === 'seq') return opts.seq_url
+  if (id === 'ui') return 'http://localhost:' + opts.ui_port
+  if (id === 'insights') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
   return undefined
 }
 
@@ -180,7 +191,7 @@ async function poll($, id, force) {
       if (!isWindows) {
         for (const s of ['coreapi', ...companions(key)]) setLight(s, { color: COLORS.grey, value: 'n/a', short: 'Port checks need Windows', detail: [] }, now)
       } else {
-        const ports = [opts.bff_port, opts.movedocs_port].map(String)
+        const ports = [opts.bff_port, opts.movedocs_port, opts.ui_port].map(String)
         const [core, svc] = await Promise.all([
           runPowerShell($, 'coreapi-probe.ps1', ['-Port', String(opts.coreapi_port), '-RepoRoot', repoRoot]),
           runPowerShell($, 'ports-probe.ps1', ['-Ports', ports.join(',')]),
@@ -188,6 +199,7 @@ async function poll($, id, force) {
         setLight('coreapi', coreApiLight(core, opts.coreapi_port), now)
         setLight('bff', serviceLight('BFF', svc ? svc[ports[0]] ?? { up: false } : null, ports[0]), now)
         setLight('movedocs', serviceLight('MoveDocs API', svc ? svc[ports[1]] ?? { up: false } : null, ports[1]), now)
+        setLight('ui', serviceLight('phoenix-ui dev server', svc ? svc[ports[2]] ?? { up: false } : null, ports[2], 'http://localhost:' + ports[2]), now)
       }
     } else if (key === 'outlook') {
       const m = isWindows ? await runPowerShell($, 'messages-probe.ps1', []) : { outlook: 'off', teams: 'off' }
@@ -230,6 +242,9 @@ async function poll($, id, force) {
         }
       }
       setLight(key, pipelineLight(runs, branch, opts.bitbucket_repo, anyBranch), now)
+    } else if (key === 'insights') {
+      const r = await runPowerShell($, 'insights-probe.ps1', ['-AppId', String(opts.appinsights_app_id), '-Minutes', String(opts.appinsights_window_minutes)])
+      setLight(key, insightsLight(r, opts.appinsights_name, opts.appinsights_window_minutes), now)
     } else if (key === 'seq') {
       const windowMin = Number(opts.seq_window_minutes)
       const from = new Date(now - windowMin * 60_000).toISOString()

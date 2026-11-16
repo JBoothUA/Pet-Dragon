@@ -10,6 +10,7 @@ import {
   jiraLight,
   prLight,
   seqLight,
+  insightsLight,
   parseTestRun,
   isTestCommand,
   testLight,
@@ -335,6 +336,7 @@ test('Seq light counts recent errors and caps the label', () => {
   expect(seqLight([{ RenderedMessage: 'x' }], 15, 50).value).toBe('1')
   expect(seqLight(new Array(50).fill({ RenderedMessage: 'x' }), 15, 50).value).toBe('50+')
   expect(seqLight(undefined, 15, 50).value).toBe('off')
+  expect(seqLight(undefined, 15, 50).short).toContain('log viewer')
 })
 
 test('skill suggestions: file paths corroborate words, a path in the prompt stands alone', () => {
@@ -387,4 +389,13 @@ test('standup picks the previous working day and formats every section', () => {
   expect(text).toContain('merged   Fix it  (3 comments)')
   expect(text).not.toContain('Elsewhere')
   expect(formatStandup({ since: new Date(), issues: undefined, prs: undefined, commits: undefined })).toContain('Jira: could not read')
+})
+
+test('App Insights light counts exceptions and failed requests', () => {
+  expect(insightsLight({ ex: 0, fr: 0 }, 'qa', 15).value).toBe('0')
+  expect(insightsLight({ ex: 0, fr: 0 }, 'qa', 15).color).toBe('#3ddc84')
+  expect(insightsLight({ ex: 173, fr: 40 }, 'qa', 15).value).toBe('173/40')
+  expect(insightsLight({ ex: 173, fr: 40 }, 'qa', 15).color).toBe('#ffc107')
+  expect(insightsLight({ error: 'not logged in' }, 'qa', 15).value).toBe('?')
+  expect(insightsLight(undefined, 'qa', 15).value).toBe('?')
 })

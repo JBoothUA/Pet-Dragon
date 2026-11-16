@@ -197,9 +197,11 @@ export function coreApiLight(p, port) {
   return { color: COLORS.amber, value: 'db ?', short: 'CoreAPI up (' + who + '), could not tell which database', detail }
 }
 
-export function serviceLight(name, p, port) {
+// page: where the service is served (default: its Swagger page over https)
+export function serviceLight(name, p, port, page) {
   if (!p) return { color: COLORS.grey, value: '?', short: name + ' probe failed to run', detail: [] }
-  const detail = [link('Swagger: https://localhost:' + port + '/swagger', 'https://localhost:' + port + '/swagger')]
+  const url = page ?? 'https://localhost:' + port + '/swagger'
+  const detail = [link((page ? 'Open: ' : 'Swagger: ') + url, url)]
   if (!p.up) return { color: COLORS.grey, value: 'off', short: name + ' is not running (nothing on :' + port + ')', detail }
   detail.push('Process: ' + (p.process ?? '?') + ' pid ' + p.pid)
   return { color: COLORS.green, value: 'up', short: name + ' is running on :' + port + ' (' + (p.process ?? 'process') + ' pid ' + p.pid + ')', detail }
@@ -349,7 +351,7 @@ export function parseTestRun(command, output) {
 }
 
 export function testLight(run, command) {
-  if (!run) return { color: COLORS.grey, value: 'none', short: 'No test run seen yet (counts runs Claude starts: dotnet test, jest, k6, playwright)', detail: [] }
+  if (!run) return { color: COLORS.grey, value: 'not run', short: 'No test run seen yet. This light shows the result of tests Claude runs in this session (dotnet test, jest, k6, playwright); it is not a CI result', detail: [] }
   const detail = [run.runner + ': ' + run.passed + ' passed, ' + run.failed + ' failed', command ? 'Command: ' + shorten(command, 100) : ''].filter(Boolean)
   if (run.failed > 0) return { color: COLORS.red, value: run.failed + ' fail', short: run.runner + ' run: ' + run.failed + ' failed, ' + run.passed + ' passed', detail }
   return { color: COLORS.green, value: run.passed + ' pass', short: run.runner + ' run: ' + run.passed + ' passed', detail }
@@ -358,7 +360,7 @@ export function testLight(run, command) {
 // events: Seq's /api/events array, newest first. windowMinutes only words the message; Seq filters by time.
 // seqUrl: where Seq is served, so an event line (and the light) can open it in Seq
 export function seqLight(events, windowMinutes, limit, seqUrl) {
-  if (!Array.isArray(events)) return { color: COLORS.grey, value: 'off', short: 'Seq did not answer (is it running?)', detail: [] }
+  if (!Array.isArray(events)) return { color: COLORS.grey, value: 'off', short: 'Seq did not answer. Seq is the local log viewer the APIs write errors to; start it to see local API errors here (not a problem if you do not use it)', detail: [] }
   const n = events.length
   const label = n >= limit ? n + '+' : String(n)
   if (n === 0) return { color: COLORS.green, value: '0', short: 'No errors in Seq in the last ' + windowMinutes + ' minutes', detail: [] }
@@ -368,6 +370,17 @@ export function seqLight(events, windowMinutes, limit, seqUrl) {
   )
   const url = base ? base + encodeURIComponent("@Level in ['Error', 'Fatal']") : undefined
   return { color: COLORS.red, value: label, short: label + ' error(s) in Seq in the last ' + windowMinutes + ' minutes', detail, url }
+}
+
+// Application Insights: r = { ex, fr } counts from the insights probe (exceptions, failed requests), or { error }.
+export function insightsLight(r, name, windowMinutes) {
+  if (!r || r.error) return { color: COLORS.grey, value: '?', short: 'Could not read Application Insights' + (r?.error ? ': ' + shorten(r.error, 80) : '') + ' (az installed and logged in? try az login)', detail: [] }
+  const ex = Number(r.ex)
+  const fr = Number(r.fr)
+  const where = name ? ' in ' + name : ''
+  const detail = [ex + ' exception(s), ' + fr + ' failed request(s)' + where + ', last ' + windowMinutes + ' minutes']
+  if (ex + fr === 0) return { color: COLORS.green, value: '0', short: 'No exceptions or failed requests' + where + ' in the last ' + windowMinutes + ' minutes', detail }
+  return { color: COLORS.amber, value: ex + '/' + fr, short: ex + ' exception(s) and ' + fr + ' failed request(s)' + where + ' in the last ' + windowMinutes + ' minutes', detail }
 }
 
 // ---- Standup ----
