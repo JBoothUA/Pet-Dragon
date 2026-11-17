@@ -225,6 +225,10 @@ test('typing turns Dragon orange unless Claude is busy or needs you', () => {
   }
   // A caller that never passes typing keeps the old behavior
   expect(pickMood({ session: 'idle', unread: 0, contextPct: 10, contextWarn: 80 })).toBe('idle')
+  // Ready is green only when nothing needs you; a needs-you light turns it coral, but mail and errors still win
+  expect(pickMood({ session: 'idle', unread: 0, contextPct: 10, contextWarn: 80, needs: 1 })).toBe('attention')
+  expect(pickMood({ session: 'idle', unread: 2, contextPct: 10, contextWarn: 80, needs: 1 })).toBe('unread')
+  expect(pickMood({ session: 'error', unread: 0, contextPct: 10, contextWarn: 80, needs: 1 })).toBe('error')
   expect(MOODS.typing.label).toBe('Listening to you')
 })
 

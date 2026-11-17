@@ -8,6 +8,7 @@ export const COLORS = {
   error: '#ff5252',
   unread: '#3d6bff',
   context: '#b388ff',
+  attention: '#ff6f91',
   typing: '#ff7a1a',
   sleepy: '#6c7a9c',
   green: '#3ddc84',
@@ -27,6 +28,7 @@ export const MOODS = {
   sleepy: { color: COLORS.sleepy, label: 'Asleep', short: 'Nothing has happened for a while; type to wake the dragon' },
   unread: { color: COLORS.unread, label: 'Unread messages', short: 'You have unread Outlook mail' },
   context: { color: COLORS.context, label: 'Context filling up', short: 'Context window is over the threshold; consider /compact' },
+  attention: { color: COLORS.attention, label: 'Something needs you', short: 'A light is amber or red: see the headline under the dragon' },
   idle: { color: COLORS.green, label: 'Ready', short: 'Idle and waiting for your next prompt' },
 }
 
@@ -40,11 +42,13 @@ export function isAsleep({ session, typing, idleMs, sleepyAfterMs }) {
 }
 
 export function pickMood(args) {
-  const { session, typing, unread, contextPct, contextWarn } = args
+  const { session, typing, unread, contextPct, contextWarn, needs } = args
   if (session === 'waiting' || session === 'error' || session === 'tool' || session === 'working') return session
   if (typing) return 'typing'
   if (unread > 0) return 'unread'
   if (typeof contextPct === 'number' && contextPct >= contextWarn) return 'context'
+  // Only a Ready dragon turns coral: green means nothing needs you
+  if (needs > 0) return 'attention'
   return isAsleep(args) ? 'sleepy' : 'idle'
 }
 

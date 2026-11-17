@@ -25,6 +25,7 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | Orange | Listening: you are typing or dictating a prompt |
 | Blue | You have unread Outlook mail |
 | Purple | The context window is past `context_warn_percent`. Consider `/compact` |
+| Coral | Something needs you: a light is amber or red (the headline under the dragon says which). Green Ready means nothing does |
 | Slate | Asleep and nothing else to say: nothing has happened for `sleepy_after_minutes`, or you ran `/dragon sleep` (eyes closed; typing or any turn wakes it). Dozing only replaces the green Ready color: with unread mail the dragon sleeps but stays blue, and a context warning stays purple |
 | Green | Ready and idle. Lights that need you show in the one-line headline under the caption, not in the dragon's color |
 

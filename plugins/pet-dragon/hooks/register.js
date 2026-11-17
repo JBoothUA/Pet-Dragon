@@ -806,6 +806,7 @@ function moodNow() {
     session: session.state,
     typing: session.typing,
     unread: unreadCount(),
+    needs: currentHeadline().count,
     contextPct: session.contextPct,
     contextWarn: Number(opts.context_warn_percent),
     idleMs: Date.now() - lastActivity,
