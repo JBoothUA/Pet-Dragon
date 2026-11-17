@@ -525,11 +525,14 @@ async function autoTestPlan($, kind) {
     return proj ? { argv: ['dotnet', 'test', proj, '--nologo'], cwd: repoRoot, shown: 'dotnet test ' + proj + ' --nologo' } : undefined
   }
   if (!(await find('phoenix-ui/package.json'))) return undefined
-  // The whole Jest suite is 1,200+ files and runs for 40+ minutes, so the automatic run covers only the tests related to
-  // what this branch changed against origin/development; a run of Claude's own (npm test) replaces it with the real thing
-  const npm = ['npm', 'run', 'test', '--', '--silent', '--changedSince=origin/development', '--passWithNoTests']
-  return { argv: shellWrap(npm), cwd: repoRoot + '/phoenix-ui', shown: npm.join(' ') }
+  // The whole Jest suite is 1,200+ files and runs for 40+ minutes, but one $.process.run lasts ten minutes at most,
+  // so the full suite runs as FE_SHARDS Jest shards one after another and the results are added up
+  const npm = ['npm', 'run', 'test', '--', '--silent']
+  return { argv: shellWrap(npm), cwd: repoRoot + '/phoenix-ui', shown: npm.join(' ') + ' (full suite)', shards: FE_SHARDS }
 }
+
+const FE_SHARDS = 12
+const shardTotals = {}
 
 // Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it and record the result.
 // Backend first, then front end, so the two suites do not compete for the CPU.
@@ -549,24 +552,35 @@ async function runTestKind($, kind, force) {
   try {
     const plan = await autoTestPlan($, kind)
     if (!plan) return
+    const shards = plan.shards ?? 1
     for (const attempt of [1, 2]) {
-      setLight(light, { color: COLORS.working, value: 'running', short: (attempt === 2 ? 'The first run gave no result, so Dragon is running it again: ' : 'No test run was recorded for this repo, so Dragon is running: ') + shorten(plan.shown, 90), detail: [] }, await $.clock.now())
-      $.ui.invalidate('ui.render')
       let unclear
       let tail = []
+      // Shards that already finished are kept on the second attempt, so only the one that failed runs again
+      const total = attempt === 2 && shardTotals[kind] ? shardTotals[kind] : { passed: 0, failed: 0, next: 1 }
+      shardTotals[kind] = total
       try {
-        const r = await $.process.run(plan.argv, { cwd: plan.cwd, timeoutMs: 600_000 })
-        const output = [r.stdout, r.stderr].filter(Boolean).join('\n')
-        const run = parseTestRun(plan.shown, output)
-        if (run && testKind(run) === kind) {
-          await recordTestRun($, run, plan.shown, await $.clock.now())
-          return
+        for (; total.next <= shards; total.next++) {
+          const label = shards > 1 ? ' (part ' + total.next + ' of ' + shards + ')' : ''
+          setLight(light, { color: COLORS.working, value: shards > 1 ? total.next + '/' + shards : 'running', short: (attempt === 2 ? 'The first run gave no result, so Dragon is running it again: ' : 'No test run was recorded for this repo, so Dragon is running: ') + shorten(plan.shown, 90) + label, detail: [] }, await $.clock.now())
+          $.ui.invalidate('ui.render')
+          const argv = shards > 1 ? [...plan.argv, '--shard=' + total.next + '/' + shards] : plan.argv
+          const r = await $.process.run(argv, { cwd: plan.cwd, timeoutMs: 600_000 })
+          const output = [r.stdout, r.stderr].filter(Boolean).join('\n')
+          const run = parseTestRun(plan.shown, output)
+          if (!run || testKind(run) !== kind) {
+            // What the run actually said, so an unclear light explains itself on hover
+            tail = output.split('\n').map((l) => l.trim()).filter(Boolean).slice(-4).map((l) => shorten(l, 110))
+            throw new Error('Ran ' + shorten(plan.shown, 80) + label + ' (exit ' + r.exitCode + ') but found no pass/fail summary in its output')
+          }
+          total.passed += run.passed
+          total.failed += run.failed
         }
-        // What the run actually said, so an unclear light explains itself on hover
-        tail = output.split('\n').map((l) => l.trim()).filter(Boolean).slice(-4).map((l) => shorten(l, 110))
-        unclear = 'Ran ' + shorten(plan.shown, 90) + ' (exit ' + r.exitCode + ') but found no pass/fail summary in its output'
+        delete shardTotals[kind]
+        await recordTestRun($, { runner: kind === 'be' ? 'dotnet' : 'jest', passed: total.passed, failed: total.failed }, plan.shown, await $.clock.now())
+        return
       } catch (err) {
-        unclear = 'The automatic test run failed: ' + shorten(err?.message ?? err, 100)
+        unclear = shorten(err?.message ?? err, 160)
       }
       setLight(light, { color: COLORS.amber, value: 'unclear', short: unclear + '. Click this light to run it again', detail: tail.length ? ['Last output:', ...tail] : [] }, await $.clock.now())
     }
