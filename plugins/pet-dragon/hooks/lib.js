@@ -2,11 +2,10 @@
 
 export const COLORS = {
   ember: '#ffb347',
-  idle: '#e0242a',
   working: '#ffd23f',
   tool: '#36c5f0',
   waiting: '#ff4fd8',
-  error: '#a1887f',
+  error: '#ff5252',
   unread: '#3d6bff',
   context: '#b388ff',
   typing: '#ff7a1a',
@@ -28,7 +27,7 @@ export const MOODS = {
   sleepy: { color: COLORS.sleepy, label: 'Asleep', short: 'Nothing has happened for a while; type to wake the dragon' },
   unread: { color: COLORS.unread, label: 'Unread messages', short: 'You have unread Outlook mail' },
   context: { color: COLORS.context, label: 'Context filling up', short: 'Context window is over the threshold; consider /compact' },
-  idle: { color: COLORS.idle, label: 'Ready', short: 'Idle and waiting for your next prompt' },
+  idle: { color: COLORS.green, label: 'Ready', short: 'Idle and waiting for your next prompt' },
 }
 
 // idleMs / sleepyAfterMs are optional: a caller that omits them never gets the sleepy mood.
@@ -469,16 +468,40 @@ export function dayLight(st, limit = DAILY_LIMIT_USD) {
   }
 }
 
-// This session's own cost and burn rate
-export function sessLight(usd, startedAt, nowMs) {
-  if (typeof usd !== 'number') return { color: COLORS.grey, value: '?', short: 'Session cost is not known yet (it appears after the first reply)', detail: [] }
-  const mins = typeof startedAt === 'number' ? Math.max(1, Math.round((nowMs - startedAt) / 60_000)) : undefined
-  const span = mins === undefined ? '' : mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm'
-  const rate = mins !== undefined && mins >= 10 ? usd / (mins / 60) : undefined
-  const v = usd < 10 ? '$' + usd.toFixed(2) : '$' + Math.round(usd)
-  const short = 'This session has cost $' + usd.toFixed(2) + (span ? ' over ' + span : '') + (rate !== undefined ? ' (about $' + rate.toFixed(2) + ' an hour)' : '')
-  return { color: COLORS.teal, value: v, short, detail: ['Cost of this session alone; Today adds up every session.'] }
+// Tickets you are carrying right now (Jira's "In Progress" category: In Progress, Code Review, Ready for QA).
+// Amber when one has not been touched for STALE_TICKET_DAYS; Jira's "updated" stands in for "time in this status".
+export const STALE_TICKET_DAYS = 3
+export function mineLight(json, nowMs) {
+  const issues = json?.data?.issues
+  if (!Array.isArray(issues)) return { color: COLORS.grey, value: '?', short: 'Could not read Jira (is twg logged in?)', detail: [] }
+  const days = (i) => (typeof nowMs === 'number' && Date.parse(i.updated) ? Math.floor((nowMs - Date.parse(i.updated)) / 86_400_000) : 0)
+  const mine = issues.filter((i) => i.status?.statusCategory?.key === 'indeterminate').sort((a, b) => days(b) - days(a))
+  if (mine.length === 0) return { color: COLORS.green, value: '0', short: 'None of your tickets is in progress', detail: [] }
+  const stale = mine.filter((i) => days(i) >= STALE_TICKET_DAYS)
+  const detail = mine.map((i) => link(i.key + '  ' + (i.status?.name ?? '?') + '  ' + days(i) + 'd  ' + (i.summary ?? ''), i.url))
+  const short =
+    mine.length + ' ticket(s) in flight' + (stale.length ? ', ' + stale.length + ' untouched for ' + STALE_TICKET_DAYS + '+ days (oldest ' + stale[0].key + ', ' + days(stale[0]) + 'd)' : ', all moved in the last ' + STALE_TICKET_DAYS + ' days')
+  return { color: stale.length ? COLORS.amber : COLORS.teal, value: String(mine.length), short, detail }
 }
+
+// What needs you right now, from the lights: amber and red lights, worst first.
+// items: [{ label, light }]. level drives the one-line headline and the Ready dragon's color.
+export function headline(items, limit = 4) {
+  const bad = items.filter((i) => i.light && (i.light.color === COLORS.red || i.light.color === COLORS.amber))
+  bad.sort((a, b) => (a.light.color === COLORS.red ? 0 : 1) - (b.light.color === COLORS.red ? 0 : 1))
+  if (bad.length === 0) return { level: 'green', color: COLORS.green, count: 0, text: 'All clear' }
+  const level = bad.some((i) => i.light.color === COLORS.red) ? 'red' : 'amber'
+  const names = bad.slice(0, limit).map((i) => i.label + ' ' + i.light.value)
+  const more = bad.length > limit ? ' +' + (bad.length - limit) + ' more' : ''
+  return { level, color: level === 'red' ? COLORS.red : COLORS.amber, count: bad.length, text: bad.length + (bad.length === 1 ? ' needs you: ' : ' need you: ') + names.join(' \u00b7 ') + more }
+}
+
+// How long a changed light flashes, and how fast
+export const PULSE_MS = 2800
+export const PULSE_STEP_MS = 350
+export const pulsing = (light, nowMs) => Boolean(light?.changedAt) && nowMs - light.changedAt < PULSE_MS
+// true = bright half of the flash
+export const pulseBright = (light, nowMs) => pulsing(light, nowMs) && Math.floor((nowMs - light.changedAt) / PULSE_STEP_MS) % 2 === 0
 
 // What to tell the user right now. Each item has a stable id so it is announced once and re-armed when it clears.
 // s = { contextPct, startBranch, branch, sessionMinutes, day, limits }

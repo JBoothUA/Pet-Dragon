@@ -28,7 +28,11 @@ import {
   ctxLight,
   dayStats,
   dayLight,
-  sessLight,
+  mineLight,
+  headline,
+  PULSE_STEP_MS,
+  pulsing,
+  pulseBright,
   tokenAdvice,
   reviewLight,
   mergedLight,
@@ -107,11 +111,11 @@ const SOURCES = [
   { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
-  { id: 'sess', label: 'Sess', title: 'This session', row: 4 },
+  { id: 'mine', label: 'Mine', title: 'Your tickets in flight', row: 4, parent: 'jira' },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day', 'sess'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day'])
 const ERROR_LIMIT = 50
 
 let opts = { ...DEFAULTS }
@@ -154,8 +158,28 @@ function unreadCount() {
   return Number.isFinite(n) ? n : 0
 }
 
+// A value or color that differs from the last one stamps changedAt, which the render flashes for PULSE_MS.
+// The first reading of a light is not a change.
 function setLight(id, light, checkedAt) {
-  lights[id] = { ...light, checkedAt }
+  const prev = lights[id]
+  const changed = prev && (prev.value !== light.value || prev.color !== light.color)
+  lights[id] = { ...light, checkedAt, changedAt: changed ? Date.now() : prev?.changedAt }
+}
+
+// Redraws every PULSE_STEP_MS while any light is mid-flash, then stops
+let pulseTimer = null
+function syncPulse($) {
+  const now = Date.now()
+  const any = Object.values(lights).some((l) => pulsing(l, now))
+  if (any && !pulseTimer) {
+    pulseTimer = $.clock.every(PULSE_STEP_MS, () => {
+      $.ui.invalidate('ui.render')
+      if (!Object.values(lights).some((l) => pulsing(l, Date.now()))) {
+        pulseTimer?.cancel()
+        pulseTimer = null
+      }
+    })
+  }
 }
 
 // Where clicking a light goes (opened in Chrome); undefined = open the /dragon pane instead
@@ -164,7 +188,7 @@ function lightUrl(id) {
   if (id === 'coreapi') return 'http://localhost:' + opts.coreapi_port + '/swagger'
   if (id === 'bff') return 'https://localhost:' + opts.bff_port + '/swagger'
   if (id === 'movedocs') return 'https://localhost:' + opts.movedocs_port + '/swagger'
-  if (id === 'jira') return opts.jira_board_url
+  if (id === 'jira' || id === 'mine') return opts.jira_board_url
   if (id === 'bitbucket') return opts.pr_list_url
   if (id === 'pipeline') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
   if (id === 'seq') return opts.seq_url
@@ -236,7 +260,9 @@ async function poll($, id, force) {
         ['twg', 'jira', 'workitem', 'query', '--jql', opts.jira_jql, '--limit', '50', '-o', 'json', '--output-summary', 'none'],
         { timeoutMs: 90_000 },
       )
-      setLight(key, jiraLight(parseJson(r.stdout)), now)
+      const json = parseJson(r.stdout)
+      setLight(key, jiraLight(json), now)
+      setLight('mine', mineLight(json, now), now)
     } else if (key === 'bitbucket') {
       const prQuery = (role) =>
         $.process.run(['twg', 'prs', 'query', '--scope', 'me', '--role', role, '--state', 'open', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 180_000 })
@@ -350,6 +376,7 @@ async function poll($, id, force) {
     setLight(key, { color: COLORS.grey, value: '?', short: 'Check failed: ' + shorten(err?.message ?? err, 60), detail: [] }, now)
   } finally {
     busy[key] = false
+    syncPulse($)
     $.ui.invalidate('ui.render')
   }
 }
@@ -487,7 +514,6 @@ async function refreshContext($, { turnEnded } = {}) {
     const day = dayStats(days, today)
     setLight('ctx', ctxLight(session.contextPct), now)
     setLight('day', dayLight(day), now)
-    setLight('sess', sessLight(u?.cost?.usd, u?.startedAt, now), now)
 
     if (!startBranch && lights.git?.branch) startBranch = lights.git.branch
     const advice = tokenAdvice({
@@ -524,6 +550,7 @@ async function refreshContext($, { turnEnded } = {}) {
   } catch {
     // The Use lights are advisory; a failed reading leaves the previous ones
   } finally {
+    syncPulse($)
     $.ui.invalidate('ui.render')
   }
 }
@@ -596,6 +623,8 @@ function checkSleepy($) {
     $.ui.invalidate('ui.render')
   }
 }
+
+const currentHeadline = () => headline(SOURCES.map((s) => ({ label: s.label, light: lights[s.id] })))
 
 function moodNow() {
   const key = pickMood({
@@ -907,7 +936,14 @@ export function register(on, options) {
       ],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'Use']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'Me']
+    const nowMs = Date.now()
+    const head = currentHeadline()
+    const headlineRow = Text({
+      key: 'drg-headline',
+      wrap: 'truncate-end',
+      children: [Text({ color: head.color, bold: true, children: ['\u25cf '] }), Text({ color: head.level === 'green' ? head.color : undefined, bold: head.level !== 'green', children: [head.text] })],
+    })
     const lightRow = (row) =>
       Box({
         key: 'drg-row-' + row,
@@ -947,15 +983,17 @@ export function register(on, options) {
                 ],
               })
             }
+            // A light whose value just changed flashes: a filled dot and a highlighted value on every other step
+            const flash = pulseBright(l, nowMs)
             return Button({
               key: 'drg-light-' + s.id,
               plain: true,
               hover: { scope: 'drg-' + s.id, underline: true },
               onPress: open,
               children: [
-                Text({ color, children: ['\u25cf '] }),
+                Text({ color, children: [flash ? '\u25c9 ' : '\u25cf '] }),
                 Text({ children: [s.label + ' '] }),
-                Text({ color, bold: true, children: [l ? l.value : '\u2026'] }),
+                Text({ color: flash ? '#111111' : color, backgroundColor: flash ? color : undefined, bold: true, children: [l ? l.value : '\u2026'] }),
               ],
             })
           }),
@@ -1011,7 +1049,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, lightRow(0), lightRow(1), lightRow(2), lightRow(3), lightRow(4), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(2), lightRow(3), lightRow(4), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.

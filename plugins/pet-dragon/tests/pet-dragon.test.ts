@@ -18,7 +18,10 @@ import {
   ctxLight,
   dayStats,
   dayLight,
-  sessLight,
+  mineLight,
+  headline,
+  pulseBright,
+  pulsing,
   tokenAdvice,
   reviewLight,
   mergedLight,
@@ -521,15 +524,6 @@ test('Core light says which database it uses and whether the other is ready to s
   expect(docker.localReady).toBe(false)
 })
 
-test('session light shows cost and burn rate', () => {
-  const now = Date.parse('2026-11-16T12:00:00Z')
-  const l = sessLight(3.456, now - 90 * 60_000, now)
-  expect(l.value).toBe('$3.46')
-  expect(l.short).toBe('This session has cost $3.46 over 1h 30m (about $2.30 an hour)')
-  expect(sessLight(25, now - 5 * 60_000, now).short).not.toContain('an hour')
-  expect(sessLight(undefined, now, now).value).toBe('?')
-})
-
 test('Tests light remembers the last run and shows how old it is', () => {
   const now = Date.parse('2026-11-16T12:00:00Z')
   const run = { runner: 'dotnet', passed: 1191, failed: 0 }
@@ -572,4 +566,41 @@ test('meetings light counts what is still to come and names tomorrow\'s first me
   expect(shouldRemindMeeting(at(15, 40), 10_000, undefined)).toBe(false)
   expect(shouldRemindMeeting(at(16, 5), 10_000, undefined)).toBe(true)
   expect(shouldRemindMeeting(at(16, 5), 10_000, '2026-11-16')).toBe(false)
+})
+
+test('mineLight counts tickets in flight and flags stale ones', () => {
+  const now = Date.parse('2026-11-16T12:00:00Z')
+  const mk = (key, cat, updated) => ({ key, url: 'u', summary: 's', status: { name: 'X', statusCategory: { key: cat } }, updated })
+  const fresh = mineLight({ data: { issues: [mk('C3-1', 'indeterminate', '2026-11-16T08:00:00Z'), mk('C3-2', 'new', '2026-11-01T08:00:00Z')] } }, now)
+  expect(fresh.value).toBe('1')
+  expect(fresh.color).toBe('#1de9b6')
+  const stale = mineLight({ data: { issues: [mk('C3-1', 'indeterminate', '2026-11-16T08:00:00Z'), mk('C3-3', 'indeterminate', '2026-11-10T08:00:00Z')] } }, now)
+  expect(stale.value).toBe('2')
+  expect(stale.color).toBe('#ffc107')
+  expect(stale.short).toContain('oldest C3-3, 6d')
+  expect(mineLight({ data: { issues: [] } }, now).value).toBe('0')
+  expect(mineLight(undefined, now).value).toBe('?')
+})
+
+test('headline names what needs you, and Ready is green', () => {
+  const g = { color: '#3ddc84', value: 'ok' }
+  expect(headline([{ label: 'Git', light: g }])).toMatchObject({ level: 'green', text: 'All clear', color: '#3ddc84' })
+  const h = headline([
+    { label: 'Git', light: g },
+    { label: 'Tests', light: { color: '#ffc107', value: 'unclear' } },
+    { label: 'Core', light: { color: '#ff5252', value: 'off' } },
+  ])
+  expect(h.level).toBe('red')
+  expect(h.text).toBe('2 need you: Core off · Tests unclear')
+  expect(headline([{ label: 'Ctx', light: { color: '#ffc107', value: '75%' } }]).text).toBe('1 needs you: Ctx 75%')
+  expect(MOODS.idle.color).toBe('#3ddc84')
+  expect(MOODS.error.color).toBe('#ff5252')
+})
+
+test('a changed light flashes for a moment, then settles', () => {
+  const l = { changedAt: 10_000 }
+  expect(pulseBright(l, 10_100)).toBe(true)
+  expect(pulseBright(l, 10_400)).toBe(false)
+  expect(pulsing(l, 13_000)).toBe(false)
+  expect(pulsing({}, 10_000)).toBe(false)
 })
