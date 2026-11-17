@@ -605,5 +605,9 @@ test('worktree light names the current worktree and lists the rest', () => {
   const main = worktreeLight(list, 'c:/dev/c3/')
   expect(main.value).toBe('C3')
   expect(main.color).toBe('#3ddc84')
+  // A session started in a subfolder still finds its worktree, and a lone worktree says so
+  expect(worktreeLight(list, 'C:/Dev/C3-wt-10162/phoenix-ui').value).toBe('C3-wt-10162')
+  const only = worktreeLight(parseWorktrees('worktree C:/Dev/C3\nHEAD a\nbranch refs/heads/development\n'), 'C:/Dev/C3')
+  expect(only.brief).toEqual(['\u25cf C3 (development)', 'your only worktree'])
   expect(worktreeLight(undefined, 'x').value).toBe('?')
 })

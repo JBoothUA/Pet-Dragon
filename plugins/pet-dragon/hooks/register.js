@@ -112,7 +112,7 @@ const SOURCES = [
   { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
-  { id: 'tree', label: 'Tree', title: 'Current worktree', row: 4, parent: 'git' },
+  { id: 'tree', label: 'Tree', title: 'Worktrees', row: 4, parent: 'git' },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
@@ -905,6 +905,8 @@ export function register(on, options) {
     const dragon = Box({
       key: 'drg-dragon',
       flexDirection: 'column',
+      // The light rows make the band taller than the sprite: sit it in the middle of them instead of at the top
+      alignSelf: 'center',
       width: SPRITE_WIDTH + 1,
       hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>

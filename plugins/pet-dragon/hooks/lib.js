@@ -490,11 +490,20 @@ export function worktreeLight(list, root) {
   if (!Array.isArray(list)) return { color: COLORS.grey, value: '?', short: 'Not inside a git repository (no worktrees to list)', detail: [] }
   const norm = (x) => String(x ?? '').split(String.fromCharCode(92)).join('/').replace(/\/+$/, '').toLowerCase()
   const name = (x) => x.path.replace(/\/+$/, '').split('/').pop() || x.path
-  const at = list.findIndex((w) => norm(w.path) === norm(root))
+  // The session may start in a subfolder of a worktree (phoenix-ui, say): then the deepest worktree that contains it is the current one
+  let at = list.findIndex((w) => norm(w.path) === norm(root))
+  if (at < 0) {
+    let best = -1
+    list.forEach((w, i) => {
+      if (norm(root).startsWith(norm(w.path) + '/') && (best < 0 || norm(w.path).length > norm(list[best].path).length)) best = i
+    })
+    at = best
+  }
   const cur = at >= 0 ? list[at] : undefined
   const label = (w) => (w.branch || (w.detached ? 'detached HEAD' : '?')) + (w.prunable ? ' (missing folder)' : '')
   const detail = list.map((w) => (w === cur ? '\u25cf ' : '  ') + name(w) + '  ' + label(w) + '  ' + w.path)
   const brief = list.map((w) => (w === cur ? '\u25cf ' : '') + name(w) + ' (' + (w.branch || 'detached') + ')')
+  if (list.length === 1) brief.push('your only worktree')
   const shortName = cur ? name(cur) : '?'
   const value = shortName.length > 16 ? shortName.slice(0, 15) + '\u2026' : shortName
   const short = cur
