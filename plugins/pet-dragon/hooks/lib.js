@@ -94,7 +94,7 @@ function pose(wing, lifted, middle = MIDDLE) {
 export const IDLE = pose(WING_LEVEL, false)
 export const FLAP = [pose(WING_UP, false), pose(WING_LEVEL, false), pose(WING_DOWN, true), pose(WING_LEVEL, true)]
 export const SLEEP = pose(WING_DOWN, false, SLEEP_MIDDLE)
-export const FLAP_MS = 200
+export const FLAP_MS = 400
 
 // Pads the grid by one pixel and marks every clear pixel that touches the sprite as outline (o).
 export function outline(grid) {

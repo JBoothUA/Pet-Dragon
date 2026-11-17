@@ -69,14 +69,14 @@ const DEFAULTS = {
   coreapi_port: 5236,
   bff_port: 7102,
   movedocs_port: 7201,
-  coreapi_poll_seconds: 30,
-  messages_poll_seconds: 60,
+  coreapi_poll_seconds: 60,
+  messages_poll_seconds: 120,
   jira_poll_minutes: 5,
   bitbucket_poll_minutes: 10,
   jira_jql: 'assignee = currentUser() AND statusCategory != Done',
   context_warn_percent: 80,
   sleepy_after_minutes: 20,
-  git_poll_seconds: 30,
+  git_poll_seconds: 60,
   pipeline_poll_minutes: 3,
   bitbucket_repo: 'keyhealthtech/phoenix',
   seq_url: 'http://localhost:5341',
@@ -123,8 +123,8 @@ const SOURCES = [
   { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
-  { id: 'tree', label: 'Tree', title: 'Worktrees', row: 4, parent: 'git' },
   { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4 },
+  { id: 'tree', label: 'Tree', title: 'Worktrees', row: 4, parent: 'git' },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
@@ -552,6 +552,8 @@ const TEST_KINDS = {
 async function recordTestRun($, run, command, at) {
   const kind = testKind(run)
   if (!kind) return
+  // A run that found no tests (a -t filter or -o with nothing related) says nothing about the suite: keep the last real result
+  if (run.passed + run.failed === 0 && /^\d+ (pass|fail)/.test(lights[TEST_KINDS[kind].light]?.value ?? '')) return
   setLight(TEST_KINDS[kind].light, testLight(run, command, at, at, kind), at)
   await $.store.set(TEST_KINDS[kind].store + repoRoot, { run, command, at })
 }
@@ -559,22 +561,31 @@ async function recordTestRun($, run, command, at) {
 // npm and npx are .cmd shims on Windows, which cannot be started without a shell
 const shellWrap = (argv) => (isWindows && (argv[0] === 'npm' || argv[0] === 'npx') ? ['cmd', '/c', ...argv] : argv)
 
+// Automatic runs are background work: BelowNormal priority (children inherit it) keeps the terminal and editor responsive while they run
+const lowPriority = ($, argv) => (isWindows ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $.plugin.root + '\\scripts\\low-priority.ps1', ...argv] : argv)
+
 // What to run when a kind has no recorded run: { cwd, shown, parts: [{ argv, label }] } or undefined when this repo has nothing to run.
 // A kind is the TOTAL for the repo, so it is several runs added up: one $.process.run lasts ten minutes at most, which a whole
 // suite never fits in. Backend = every C# test project; front end = the whole Jest suite as FE_SHARDS --shard parts.
 const FE_SHARDS = 24
 async function autoTestPlan($, kind) {
   const custom = String((kind === 'be' ? opts.auto_test_command : opts.auto_fe_test_command) ?? '').split(' ').filter(Boolean)
-  if (custom.length) return { cwd: repoRoot, shown: custom.join(' '), parts: [{ argv: shellWrap(custom), label: '' }] }
+  if (custom.length) return { cwd: repoRoot, shown: custom.join(' '), parts: [{ argv: lowPriority($, shellWrap(custom)), label: '' }] }
   const list = async (glob) => String((await $.process.run(['git', '-C', repoRoot, 'ls-files', glob], { timeoutMs: 15_000 })).stdout ?? '').split('\n').map((x) => x.trim()).filter(Boolean)
   if (kind === 'be') {
     const projects = (await list('*Tests*.csproj')).filter((p) => !/TestHelpers/i.test(p))
-    const parts = projects.map((p) => ({ argv: ['dotnet', 'test', p, '--nologo'], label: p.split('/').pop().replace(/\.csproj$/, '') }))
+    // Build into a folder of our own: with CoreAPI/BFF running (the APIs button starts them) their bin\Debug DLLs are locked, so every
+    // test project spent ~3 minutes in MSB3026 copy retries and then failed with no summary, which is what made the light "unclear".
+    // One folder per checkout, because obj/<project> names would otherwise collide between worktrees.
+    const tmp = ((await $.env.get('TEMP')) ?? 'C:\\Windows\\Temp').replace(/[\\/]+$/, '')
+    const artifacts = isWindows ? tmp + '\\pet-dragon-artifacts\\' + repoRoot.replace(/\/+$/, '').split('/').pop() : undefined
+    const parts = projects.map((p) => ({ argv: lowPriority($, ['dotnet', 'test', p, '--nologo', ...(artifacts ? ['--artifacts-path', artifacts] : [])]), label: p.split('/').pop().replace(/\.csproj$/, '') }))
     return parts.length ? { cwd: repoRoot, shown: 'dotnet test, all ' + parts.length + ' test projects', parts } : undefined
   }
   if (!(await list('phoenix-ui/package.json')).length) return undefined
-  const npm = ['npm', 'run', 'test', '--', '--silent']
-  const parts = Array.from({ length: FE_SHARDS }, (_, i) => ({ argv: shellWrap([...npm, '--shard=' + (i + 1) + '/' + FE_SHARDS]), label: 'part ' + (i + 1) + ' of ' + FE_SHARDS }))
+  // --maxWorkers: uncapped, Jest starts one ~700 MB worker per core (phoenix-ui/AGENTS.md says always pass it)
+  const npm = ['npm', 'run', 'test', '--', '--silent', '--maxWorkers=2']
+  const parts = Array.from({ length: FE_SHARDS }, (_, i) => ({ argv: lowPriority($, shellWrap([...npm, '--shard=' + (i + 1) + '/' + FE_SHARDS])), label: 'part ' + (i + 1) + ' of ' + FE_SHARDS }))
   return { cwd: repoRoot + '/phoenix-ui', shown: 'npm run test, full suite in ' + FE_SHARDS + ' parts', parts }
 }
 
@@ -582,16 +593,10 @@ async function autoTestPlan($, kind) {
 const partTotals = {}
 
 // Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it and record the result.
-// Backend first, then front end, so the two suites do not compete for the CPU.
+// The two suites run one after the other (each light still tracks its own parts): side by side they doubled the load on the machine.
 const testBusy = {}
 async function autoRunTests($) {
   if (!repoRoot) return
-  // The front end waits for the backend run, so it says so instead of sitting at "not run"
-  const fe = TEST_KINDS.fe.light
-  if (lights[fe]?.value === 'not run') {
-    setLight(fe, { color: COLORS.working, value: 'queued', short: 'Front-end tests start as soon as the backend run finishes (the two do not run together, to keep the machine responsive)', detail: [] }, await $.clock.now())
-    $.ui.invalidate('ui.render')
-  }
   for (const kind of ['be', 'fe']) await runTestKind($, kind, false)
 }
 
@@ -781,6 +786,7 @@ function setState($, state, tool) {
 // Any change to the prompt box (a keystroke, or dictated text landing) counts as typing for a moment
 function noteTyping($, typing) {
   if (typing) noteActivity($)
+  const was = session.typing
   typingTimer?.cancel()
   typingTimer = null
   session.typing = typing
@@ -791,15 +797,19 @@ function noteTyping($, typing) {
       syncFlap($)
     })
   }
-  syncFlap($)
+  // Every keystroke lands here: redraw only when typing starts or stops, not on each key while it is already on
+  if (typing !== was) syncFlap($)
 }
 
 // Anything the person or Claude does wakes the dragon
+const POLL_IDS = ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket']
 function noteActivity($) {
   lastActivity = Date.now()
   if (wasSleepy) {
     wasSleepy = false
     $.ui.invalidate('ui.render')
+    // Polls were skipped while asleep: refresh anything past its interval (poll() skips lights that are still fresh)
+    for (const id of POLL_IDS) poll($, id)
   }
 }
 
@@ -910,6 +920,36 @@ async function failOpen($, e, next) {
   return next(e)
 }
 
+// What "APIs" starts: each local service in row 0 that is not listening, in its own console window (close it to stop it).
+// Same commands as the start-*.cmd scripts in the repo root, minus the database migrations start-core-api.cmd runs first.
+const API_STARTS = [
+  { id: 'coreapi', title: 'Phoenix CoreAPI', dir: 'core-api\\CoreAPI', cmd: 'dotnet run --project Phoenix.CoreAPI.csproj' },
+  { id: 'bff', title: 'Phoenix BFF', dir: 'bff\\Phoenix.BFF', cmd: 'dotnet run --project Phoenix.BFF.csproj' },
+  { id: 'movedocs', title: 'Phoenix MoveDocs API', dir: 'movedocs\\Phoenix.MoveDocs', cmd: 'dotnet run --project Phoenix.MoveDocs.csproj' },
+  // The title needs a space: `start` only reads its first argument as a window title when it arrives quoted, and arguments are quoted only if they contain a space
+  { id: 'ui', title: 'Phoenix UI', dir: 'phoenix-ui', cmd: 'npm run dev' },
+]
+
+async function startApis($) {
+  if (!isWindows || !repoRoot) return $.ui.toast('Dragon can only start the APIs from a repo on Windows.')
+  // Look at the ports now rather than trusting a light that may be minutes old (or "?"): the UI was skipped that way
+  const portOf = { bff: opts.bff_port, movedocs: opts.movedocs_port, ui: opts.ui_port }
+  const probe = await runPowerShell($, 'ports-probe.ps1', ['-Ports', Object.values(portOf).join(',')]).catch(() => null)
+  const down = API_STARTS.filter((a) => (a.id in portOf && probe ? !probe[String(portOf[a.id])]?.up : ['down', 'off', '?'].includes(lights[a.id]?.value)))
+  if (down.length === 0) return $.ui.toast('Everything in the APIs row is already running.')
+  const root = repoRoot.replace(/\//g, '\\')
+  for (const a of down) {
+    try {
+      await $.process.run(['cmd', '/c', 'start', a.title, 'cmd', '/k', 'cd /d ' + root + '\\' + a.dir + ' && ' + a.cmd], { timeoutMs: 15_000 })
+    } catch (err) {
+      $.ui.toast('Dragon could not start ' + a.title + ': ' + shorten(err?.message ?? err, 80))
+    }
+  }
+  $.ui.toast('Starting ' + down.map((a) => a.title.replace(/^Phoenix /, '')).join(', ') + '. Their lights update as each one comes up.')
+  // Builds take a while: look again shortly, then at the normal interval
+  for (const secs of [20, 60, 120]) $.clock.after(secs * 1000, () => poll($, 'coreapi', true))
+}
+
 export function register(on, options) {
   opts = { ...DEFAULTS, ...(options ?? {}) }
 
@@ -948,7 +988,8 @@ export function register(on, options) {
     $.clock.after(5_000, () => poll($, 'jira'))
     $.clock.after(6_000, () => poll($, 'pipeline'))
     $.clock.after(8_000, () => poll($, 'bitbucket'))
-    for (const id of ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket']) $.clock.every(intervalMs(id), () => poll($, id))
+    // Nobody is here (the dragon is asleep): no point spawning git, twg and PowerShell every few seconds in every open session. Activity wakes it and noteActivity catches the lights up.
+    for (const id of POLL_IDS) $.clock.every(intervalMs(id), () => (moodNow().asleep ? undefined : poll($, id)))
     $.clock.every(10 * 60_000, () => loadSkills($))
     $.clock.every(60_000, () => checkSleepy($))
     $.clock.every(60_000, () => checkMeetReminder($))
@@ -1155,7 +1196,9 @@ export function register(on, options) {
         flexDirection: 'row',
         columnGap: 2,
         children: [
-          Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
+          row === 0
+            ? Button({ key: 'drg-row-label-0', plain: true, hover: { scope: 'drg-apis', underline: true }, onPress: () => startApis($), children: [Text({ dimColor: true, children: [ROW_LABELS[0].padEnd(4)] })] })
+            : Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
           ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off')).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
@@ -1215,6 +1258,7 @@ export function register(on, options) {
     const reveals = [
       { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: '' },
       { scope: 'drg-coreapi-db', text: 'CoreAPI database: ' + (lights.coreapi?.value ?? '?'), more: dbSwitchTarget(lights.coreapi) ? 'Click to switch CoreAPI to your ' + dbSwitchTarget(lights.coreapi) + ' DB (asks first)' : '' },
+      { scope: 'drg-apis', text: 'APIs: CoreAPI, BFF, MoveDocs and the UI dev server', more: 'Click to start whichever are not running' },
       { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to print it in the chat' },
       ...SOURCES.map((s) => {
         const l = lights[s.id]
@@ -1223,7 +1267,12 @@ export function register(on, options) {
         return {
           scope: 'drg-' + s.id,
           text: s.title + ': ' + (l?.short ?? 'checking…') + (l ? '  (' + ago(l.checkedAt, now) + ')' : ''),
-          more: lightUrl(s.id) ? 'Click to open' : 'Click for /dragon report',
+          more:
+            s.id === 'drift' && l?.value?.startsWith('↓')
+              ? 'Click to correct the drift (merges origin/development into ' + (lights.git?.branch ?? 'your branch') + ', asks first)'
+              : lightUrl(s.id)
+                ? 'Click to open'
+                : '',
         }
       }),
     ]
