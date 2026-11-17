@@ -555,7 +555,7 @@ async function runTestKind($, kind, force) {
       let unclear
       let tail = []
       try {
-        const r = await $.process.run(plan.argv, { cwd: plan.cwd, timeoutMs: 900_000 })
+        const r = await $.process.run(plan.argv, { cwd: plan.cwd, timeoutMs: 600_000 })
         const output = [r.stdout, r.stderr].filter(Boolean).join('\n')
         const run = parseTestRun(plan.shown, output)
         if (run && testKind(run) === kind) {
