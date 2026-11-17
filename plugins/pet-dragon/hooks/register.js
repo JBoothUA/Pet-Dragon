@@ -862,7 +862,8 @@ export function register(on, options) {
     // Before the split the one record held whichever runner ran last, so a Jest run may still sit in the backend slot
     const records = { be: testKind(beRecord?.run) === 'be' ? beRecord : undefined, fe: feRecord ?? (testKind(beRecord?.run) === 'fe' ? beRecord : undefined) }
     for (const kind of ['be', 'fe']) {
-      const rec = records[kind]
+      // A run of zero tests (an old changed-files-only run) says nothing, so it counts as not run and the full suite starts
+      const rec = records[kind]?.run && records[kind].run.passed + records[kind].run.failed === 0 ? undefined : records[kind]
       setLight(TEST_KINDS[kind].light, rec?.run ? testLight(rec.run, rec.command, rec.at, startNow, kind) : testLight(undefined, undefined, undefined, undefined, kind), startNow)
     }
     suggestionsOff = opts.skill_suggestions === 'off' || (await $.store.get('suggestions-off')) === true
