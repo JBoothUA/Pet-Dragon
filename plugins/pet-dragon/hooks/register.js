@@ -531,7 +531,7 @@ async function autoTestPlan($, kind) {
   return { argv: shellWrap(npm), cwd: repoRoot + '/phoenix-ui', shown: npm.join(' ') + ' (full suite)', shards: FE_SHARDS }
 }
 
-const FE_SHARDS = 12
+const FE_SHARDS = 24
 const shardTotals = {}
 
 // Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it and record the result.
