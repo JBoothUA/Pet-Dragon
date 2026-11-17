@@ -562,7 +562,10 @@ async function runTestKind($, kind, force) {
       try {
         for (; total.next <= shards; total.next++) {
           const label = shards > 1 ? ' (part ' + total.next + ' of ' + shards + ')' : ''
-          setLight(light, { color: COLORS.working, value: shards > 1 ? total.next + '/' + shards : 'running', short: (attempt === 2 ? 'The first run gave no result, so Dragon is running it again: ' : 'No test run was recorded for this repo, so Dragon is running: ') + shorten(plan.shown, 90) + label, detail: [] }, await $.clock.now())
+          // The value is the running count, like the finished light; which part is running goes in the hover
+          const sofar = total.failed > 0 ? total.failed + ' fail…' : total.passed > 0 ? total.passed + ' pass…' : 'running'
+          const progress = shards > 1 ? 'Part ' + total.next + ' of ' + shards + ' running; so far ' + total.passed + ' passed, ' + total.failed + ' failed. ' : ''
+          setLight(light, { color: total.failed > 0 ? COLORS.red : COLORS.working, value: sofar, short: progress + (attempt === 2 ? 'The first run gave no result, so Dragon is running it again: ' : 'No test run was recorded for this repo, so Dragon is running: ') + shorten(plan.shown, 90), detail: [] }, await $.clock.now())
           $.ui.invalidate('ui.render')
           const argv = shards > 1 ? [...plan.argv, '--shard=' + total.next + '/' + shards] : plan.argv
           const r = await $.process.run(argv, { cwd: plan.cwd, timeoutMs: 600_000 })
