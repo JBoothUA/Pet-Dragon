@@ -34,6 +34,8 @@ import {
   dirtySummary,
   approvedByMe,
   worktreeLight,
+  liveSessions,
+  sessionsLight,
   headline,
   PULSE_STEP_MS,
   pulsing,
@@ -122,11 +124,13 @@ const SOURCES = [
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
   { id: 'tree', label: 'Tree', title: 'Worktrees', row: 4, parent: 'git' },
+  { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4 },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
 const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'fe-tests', 'radar', 'ctx', 'day'])
 const ERROR_LIMIT = 50
+const SESSION_BEAT_MAX_AGE_MS = 3 * 60_000
 
 let opts = { ...DEFAULTS }
 let repoRoot = ''
@@ -695,6 +699,11 @@ async function refreshContext($, { turnEnded } = {}) {
       }
     }
     const day = dayStats(days, today)
+    // Open sessions: each one stamps itself in the shared store every tick; a stamp older than three ticks is a closed session
+    const beats = liveSessions((await $.store.get('session-beats')) ?? {}, now, SESSION_BEAT_MAX_AGE_MS)
+    beats[String(u?.startedAt ?? now)] = now
+    await $.store.set('session-beats', beats)
+    setLight('sessions', sessionsLight(Object.keys(beats).length), now)
     setLight('ctx', ctxLight(session.contextPct), now)
     setLight('day', dayLight(day), now)
 
@@ -1132,7 +1141,7 @@ export function register(on, options) {
       ],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'Me']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'AI']
     const nowMs = Date.now()
     const head = currentHeadline()
     const headlineRow = Text({

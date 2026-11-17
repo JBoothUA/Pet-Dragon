@@ -9,6 +9,7 @@ export const COLORS = {
   unread: '#3d6bff',
   context: '#b388ff',
   attention: '#ff6f91',
+  salmon: '#fa8072',
   typing: '#ff7a1a',
   sleepy: '#6c7a9c',
   green: '#3ddc84',
@@ -20,13 +21,13 @@ export const COLORS = {
 
 // What Dragon's color means. Order is priority: the first state that applies wins.
 export const MOODS = {
-  waiting: { color: COLORS.waiting, label: 'Needs you', short: 'Claude is waiting for your approval or answer' },
+  waiting: { color: COLORS.salmon, label: 'Needs you', short: 'Claude is waiting for your approval or answer' },
   error: { color: COLORS.error, label: 'Hit an error', short: 'The last turn ended with an API error' },
   tool: { color: COLORS.tool, label: 'Using a tool', short: 'Claude is running a tool' },
-  working: { color: COLORS.working, label: 'Thinking', short: 'Claude is working on your request' },
+  working: { color: COLORS.unread, label: 'Thinking', short: 'Claude is working on your request' },
   typing: { color: COLORS.typing, label: 'Listening to you', short: 'You are typing or dictating a prompt' },
   sleepy: { color: COLORS.sleepy, label: 'Asleep', short: 'Nothing has happened for a while; type to wake the dragon' },
-  unread: { color: COLORS.unread, label: 'Unread messages', short: 'You have unread Outlook mail' },
+  unread: { color: COLORS.working, label: 'Unread messages', short: 'You have unread Outlook mail' },
   context: { color: COLORS.context, label: 'Context filling up', short: 'Context window is over the threshold; consider /compact' },
   attention: { color: COLORS.attention, label: 'Something needs you', short: 'A light is amber or red: see the headline under the dragon' },
   idle: { color: COLORS.green, label: 'Ready', short: 'Idle and waiting for your next prompt' },
@@ -509,6 +510,22 @@ export function parseWorktrees(text) {
 }
 
 // The worktree this session is in; the hover and the /dragon pane list all of them. list[0] is the main checkout.
+// beats: { sessionKey: lastSeenMs } shared through the store. A session that has not checked in for maxAgeMs has closed.
+export function liveSessions(beats, now, maxAgeMs) {
+  const live = Object.entries(beats ?? {}).filter(([, at]) => typeof at === 'number' && now - at <= maxAgeMs)
+  return Object.fromEntries(live)
+}
+
+export function sessionsLight(count) {
+  const n = Number.isFinite(count) ? count : 0
+  return {
+    color: COLORS.green,
+    value: String(n),
+    short: n === 1 ? 'This is your only open Claude session' : n + ' Claude sessions are open right now (this one included)',
+    detail: [],
+  }
+}
+
 export function worktreeLight(list, root) {
   if (!Array.isArray(list)) return { color: COLORS.grey, value: '?', short: 'Not inside a git repository (no worktrees to list)', detail: [] }
   const norm = (x) => String(x ?? '').split(String.fromCharCode(92)).join('/').replace(/\/+$/, '').toLowerCase()
