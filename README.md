@@ -23,9 +23,9 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | Cyan | Claude is running a tool (wings flap) |
 | Yellow | Claude is thinking (wings flap) |
 | Orange | Listening: you are typing or dictating a prompt |
-| Slate | Asleep: nothing has happened for `sleepy_after_minutes`, or you ran `/dragon sleep` (eyes closed; typing or any turn wakes it). It outranks the rows below, so unread mail doesn't keep Dragon awake |
 | Blue | You have unread Outlook mail |
 | Purple | The context window is past `context_warn_percent`. Consider `/compact` |
+| Slate | Asleep and nothing else to say: nothing has happened for `sleepy_after_minutes`, or you ran `/dragon sleep` (eyes closed; typing or any turn wakes it). Dozing only replaces the green Ready color: with unread mail the dragon sleeps but stays blue, and a context warning stays purple |
 | Green | Ready and idle. Lights that need you show in the one-line headline under the caption, not in the dragon's color |
 
 **The lights:**
@@ -41,9 +41,10 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | PRs | Your PRs that are still open (drafts included; merged and declined PRs are not counted), with age and comment count in `/dragon` | `twg prs query --role author --state open` |
 | Mail | Unread Inbox count | Classic Outlook, through COM. It never launches Outlook |
 | Teams | Whether Teams is running (green) or not (grey). It does not count unread chats: Teams has no local API for that | `Get-Process ms-teams` |
-| Git | Your branch in the session's repo: uncommitted files (`2~`), commits to push (`↑1`), commits behind upstream (`↓3`, amber), or **clean** | `git status --porcelain=v2 --branch`. Its changed files also feed skill suggestions |
+| Git | Your branch in the session's repo: uncommitted files (`2~`), commits to push (`↑1`), commits behind upstream (`↓3`, amber), or **clean**. Click it while there are uncommitted changes to see the files and choose **Reset** (`git reset --hard`, then `git pull --ff-only`; untracked files are kept, and a `git stash apply` id is shown so the discarded changes can be restored) or **Keep** (does nothing) | `git status --porcelain=v2 --branch`. Its changed files also feed skill suggestions |
 | CI | The newest Bitbucket Pipelines run for your current branch: **passed**, **failed**, **running**, **stopped** or **none**. Click to open the pipelines page | `twg bb pipeline query` for `bitbucket_repo` |
-| Tests | The last test run Claude started this session: `dotnet test`, `npm test`/jest, `k6 run`, `playwright test`. It reads the runner's own summary line, so it cannot see runs you start in another terminal | The Bash tool's output | Shows **not run** until Claude runs one; it is not a CI result.
+| BE Tests | The last backend (C#) test run Claude started: `dotnet test`. It reads the runner's own summary line, so it cannot see runs you start in another terminal. The last run is remembered between sessions; with none recorded, Dragon runs the first `bff/Tests/*UnitTests*` project once (or `auto_test_command`) | The Bash tool's output |
+| FE Tests | The same for the front end: the last Jest run (`npm test`, `jest`). With none recorded, Dragon runs `npm run test -- --silent` in `phoenix-ui` once (or `auto_fe_test_command`), after the backend run finishes | The Bash tool's output |
 | Logs (Seq) | Error and Fatal events in the last `seq_window_minutes`, capped at **50+**. Seq is the local log viewer the APIs write to (port 5341); grey **off** just means it is not running. Click to open Seq | Seq's HTTP API at `seq_url` |
 | Prod | The release pipeline from git: **production** version (newest `origin/release/prod/*`), the **next** release branch (`release/next/*`) with its ticket count, and how many more tickets `development` holds beyond that cut. The light shows the production version; hover for the rest. Fetches origin every `radar_poll_minutes` | git (refs only, no checkout) |
 | Drift | How far your branch is behind `origin/development`, and **red** when files you changed were also changed there (a merge conflict in waiting) | git |

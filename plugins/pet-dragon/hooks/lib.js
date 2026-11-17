@@ -30,15 +30,22 @@ export const MOODS = {
   idle: { color: COLORS.green, label: 'Ready', short: 'Idle and waiting for your next prompt' },
 }
 
-// idleMs / sleepyAfterMs are optional: a caller that omits them never gets the sleepy mood.
-export function pickMood({ session, typing, unread, contextPct, contextWarn, idleMs, sleepyAfterMs }) {
+// Dozing is how the dragon looks, not what it says: it dozes after sleepyAfterMs without activity, unless Claude is
+// working or you are typing. Whatever color the mood has stays (blue mail, purple context, red error); only the
+// green "Ready" default turns the sleepy grey.
+// idleMs / sleepyAfterMs are optional: a caller that omits them never gets the sleepy look.
+export function isAsleep({ session, typing, idleMs, sleepyAfterMs }) {
+  if (session === 'working' || session === 'tool' || typing) return false
+  return typeof idleMs === 'number' && typeof sleepyAfterMs === 'number' && sleepyAfterMs > 0 && idleMs >= sleepyAfterMs
+}
+
+export function pickMood(args) {
+  const { session, typing, unread, contextPct, contextWarn } = args
   if (session === 'waiting' || session === 'error' || session === 'tool' || session === 'working') return session
   if (typing) return 'typing'
-  // Asleep beats the quiet moods: standing unread mail must not keep the dragon awake forever
-  if (typeof idleMs === 'number' && typeof sleepyAfterMs === 'number' && sleepyAfterMs > 0 && idleMs >= sleepyAfterMs) return 'sleepy'
   if (unread > 0) return 'unread'
   if (typeof contextPct === 'number' && contextPct >= contextWarn) return 'context'
-  return 'idle'
+  return isAsleep(args) ? 'sleepy' : 'idle'
 }
 
 // Fixed parts of the Dragon mascot; R (body) takes the mood color and S (wings) is a darker shade of it.
@@ -392,9 +399,18 @@ export function parseTestRun(command, output) {
   return undefined
 }
 
+// Which light a run belongs to: C# tests are the backend (be), Jest is the front end (fe). Other runners have no light.
+export function testKind(run) {
+  return run?.runner === 'dotnet' ? 'be' : run?.runner === 'jest' ? 'fe' : undefined
+}
+
 // at / nowMs: when the run happened and now, so a run remembered from an earlier session shows its age
-export function testLight(run, command, at, nowMs) {
-  if (!run) return { color: COLORS.grey, value: 'not run', short: 'No test run recorded yet. Dragon records every test run Claude starts (dotnet test, jest, k6, playwright) and remembers the last one between sessions; it cannot see runs from another terminal', detail: [] }
+// kind: 'be' (default) or 'fe', only to word the "no run yet" message
+export function testLight(run, command, at, nowMs, kind = 'be') {
+  if (!run) {
+    const what = kind === 'fe' ? 'front-end test run recorded yet. Dragon records every Jest run Claude starts (npm test, jest)' : 'backend test run recorded yet. Dragon records every C# test run Claude starts (dotnet test)'
+    return { color: COLORS.grey, value: 'not run', short: 'No ' + what + ' and remembers the last one between sessions; it cannot see runs from another terminal', detail: [] }
+  }
   const when = typeof at === 'number' && typeof nowMs === 'number' ? ago(at, nowMs) : ''
   const stale = typeof at === 'number' && typeof nowMs === 'number' && nowMs - at > 24 * 3_600_000
   const detail = [run.runner + ': ' + run.passed + ' passed, ' + run.failed + ' failed' + (when ? ' (' + when + ')' : ''), command ? 'Command: ' + shorten(command, 100) : ''].filter(Boolean)
@@ -682,6 +698,39 @@ export function reviewLight(json, repoId) {
   const detail = prs.map((p) => link(p.title + ' (' + (p.ageDays ?? '?') + 'd old, ' + (p.commentCount ?? 0) + ' comments)', p.url))
   const short = prs.length + ' open PR(s) waiting on your review' + (stale ? ', ' + stale + ' older than 3 days' : '')
   return { color: stale ? COLORS.red : COLORS.amber, value: String(prs.length), short, detail, brief: prs.map((p) => String(p.title ?? '').slice(0, 8).trim() + ' ' + (p.ageDays ?? '?') + 'd') }
+}
+
+// `git status --porcelain` lines -> the question Dragon asks when you click a dirty Git light
+export function dirtySummary(lines, branch, max = 15) {
+  const shown = lines.slice(0, max).map((l) => '  ' + l)
+  const more = lines.length > max ? ['  \u2026and ' + (lines.length - max) + ' more'] : []
+  const untracked = lines.filter((l) => l.startsWith('??')).length
+  return [
+    lines.length + ' uncommitted change(s)' + (branch ? ' on ' + branch : '') + ':',
+    ...shown,
+    ...more,
+    '',
+    'Reset runs git reset --hard (discards the tracked changes above' + (untracked ? '; the ' + untracked + ' untracked ?? file(s) stay' : '') + ') and then git pull. Dragon keeps a recovery id so the discarded changes can be restored.',
+    'Reset them, or keep them?',
+  ].join('\n')
+}
+
+// The number in a Bitbucket PR link (.../pull-requests/14780)
+export function prNumber(url) {
+  const m = /pull-requests\/([0-9]+)/.exec(String(url ?? ''))
+  return m ? Number(m[1]) : undefined
+}
+
+// `twg bb prs get a b c` answers { items: [{ ok, data: { id, participants: [{ user: { account_id }, approved }] } }] }.
+// Returns the Set of PR numbers you have already approved; undefined when the answer cannot be read.
+export function approvedByMe(json, accountId) {
+  if (!Array.isArray(json?.items) || !accountId) return undefined
+  const done = new Set()
+  for (const it of json.items) {
+    const d = it?.ok ? it.data : undefined
+    if ((d?.participants ?? []).some((x) => x.user?.account_id === accountId && x.approved === true)) done.add(d.id)
+  }
+  return done
 }
 
 // lines: "author|subject" from `git log origin/development --first-parent`, merged since local midnight

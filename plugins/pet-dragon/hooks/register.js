@@ -8,6 +8,7 @@ import {
   SPRITE_WIDTH,
   spriteRows,
   pickMood,
+  isAsleep,
   parseJson,
   parseJsonAny,
   ago,
@@ -29,6 +30,9 @@ import {
   dayStats,
   dayLight,
   parseWorktrees,
+  prNumber,
+  dirtySummary,
+  approvedByMe,
   worktreeLight,
   headline,
   PULSE_STEP_MS,
@@ -44,6 +48,7 @@ import {
   isTestCommand,
   parseTestRun,
   testLight,
+  testKind,
   formatStandup,
   standupSince,
   localDay,
@@ -80,11 +85,14 @@ const DEFAULTS = {
   radar_poll_minutes: 10,
   db_scripts_dir: '',
   auto_test_command: '',
+  auto_fe_test_command: '',
   token_coach: 'advise',
   auto_compact_percent: 90,
   skill_suggestions: 'ask',
   skill_min_score: 2,
   // twg returns PRs from every repo you authored in; only this one (phoenix) is counted
+  // Whose approvals clear a PR from the Review light (the same Atlassian account as the Jira board link below)
+  my_account_id: '712020:d474c235-c75d-4715-a77f-8c84fae88106',
   pr_repo_id: '7b33633431633438372d666438652d346565362d396133392d3461376330663439316230367d',
   pr_list_url: 'https://bitbucket.org/keyhealthtech/phoenix/pull-requests/?state=ALL&user_filter=ALL&author=712020%3Ad474c235-c75d-4715-a77f-8c84fae88106',
   jira_board_url: 'https://keyjira.atlassian.net/jira/software/c/projects/C3/boards/880?assignee=712020%3Ad474c235-c75d-4715-a77f-8c84fae88106',
@@ -104,7 +112,8 @@ const SOURCES = [
   { id: 'teams', label: 'Teams', title: 'Teams', row: 1, parent: 'outlook' },
   { id: 'git', label: 'Git', title: 'Git', row: 2 },
   { id: 'pipeline', label: 'CI', title: 'Pipelines', row: 2 },
-  { id: 'tests', label: 'Tests', title: 'Tests', row: 2 },
+  { id: 'tests', label: 'BE Tests', title: 'Backend tests (C#)', row: 2 },
+  { id: 'fe-tests', label: 'FE Tests', title: 'Frontend tests (Jest)', row: 2 },
   { id: 'seq', label: 'Logs', title: 'Seq errors', row: 2 },
   { id: 'radar', label: 'Prod', title: 'Release radar', row: 3 },
   { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, parent: 'radar' },
@@ -116,7 +125,7 @@ const SOURCES = [
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'fe-tests', 'radar', 'ctx', 'day'])
 const ERROR_LIMIT = 50
 
 let opts = { ...DEFAULTS }
@@ -267,7 +276,7 @@ async function poll($, id, force) {
         $.process.run(['twg', 'prs', 'query', '--scope', 'me', '--role', role, '--state', 'open', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 180_000 })
       const [r, rv] = await Promise.all([prQuery('author'), prQuery('reviewer')])
       setLight(key, prLight(parseJson(r.stdout), opts.pr_repo_id), now)
-      setLight('reviews', reviewLight(parseJson(rv.stdout), opts.pr_repo_id), now)
+      setLight('reviews', reviewLight(await withoutMyApprovals($, parseJson(rv.stdout)), opts.pr_repo_id), now)
     } else if (key === 'git') {
       if (!repoRoot) {
         setLight(key, gitLight(undefined), now)
@@ -386,6 +395,59 @@ async function poll($, id, force) {
   }
 }
 
+// twg lists every open PR you are a reviewer on, approved or not, so drop the ones you already approved.
+// If the approvals cannot be read, the list stays as it was rather than hiding a PR that still needs you.
+async function withoutMyApprovals($, json) {
+  const all = json?.data?.pullRequests
+  if (!Array.isArray(all) || !opts.my_account_id) return json
+  const [workspace, repo] = String(opts.bitbucket_repo).split('/')
+  const numbers = all.filter((p) => !opts.pr_repo_id || p.repo?.id === opts.pr_repo_id).map((p) => prNumber(p.url)).filter(Boolean).slice(0, 30)
+  if (numbers.length === 0) return json
+  try {
+    const r = await $.process.run(['twg', 'bb', 'prs', 'get', ...numbers.map(String), '-w', workspace, '-r', repo, '-o', 'json', '--output-summary', 'none'], { timeoutMs: 180_000 })
+    const done = approvedByMe(parseJson(r.stdout), opts.my_account_id)
+    return done?.size ? { ...json, data: { ...json.data, pullRequests: all.filter((p) => !done.has(prNumber(p.url))) } } : json
+  } catch {
+    return json
+  }
+}
+
+// Clicking the Git light with uncommitted changes lists them and offers a reset to the remote state.
+// Returns true when it handled the click (there were changes), false to fall through to the normal click.
+let resettingGit = false
+async function reviewChanges($) {
+  if (resettingGit || !repoRoot) return false
+  const git = (...args) => $.process.run(['git', '-C', repoRoot, ...args], { timeoutMs: 120_000 })
+  const st = await git('status', '--porcelain')
+  const lines = String(st.stdout ?? '').split('\n').map((l) => l.trimEnd()).filter(Boolean)
+  if (st.exitCode !== 0 || lines.length === 0) return false
+  const reset = 'Reset: discard changes, then pull'
+  let answer = ''
+  try {
+    answer = await $.ui.ask(dirtySummary(lines, lights.git?.branch), { header: 'Dragon', options: [reset, 'Keep my changes'] })
+  } catch {
+    return true
+  }
+  if (answer !== reset) return true
+  resettingGit = true
+  try {
+    // A dangling commit holding the tracked changes, so "reset" can still be undone with git stash apply <id>
+    const snap = String((await git('stash', 'create')).stdout ?? '').trim()
+    const hard = await git('reset', '--hard')
+    if (hard.exitCode !== 0) throw new Error(shorten(hard.stderr || hard.stdout || 'git reset failed', 140))
+    const pull = await git('pull', '--ff-only')
+    const recover = snap ? ' To get the discarded changes back: git stash apply ' + snap.slice(0, 10) : ''
+    if (pull.exitCode === 0) $.ui.toast('Reset to the last commit and pulled.' + recover)
+    else $.ui.toast('Reset done, but git pull failed: ' + shorten(pull.stderr || pull.stdout || 'unknown error', 120) + recover)
+  } catch (err) {
+    $.ui.toast('Reset failed: ' + shorten(err?.message ?? err, 140))
+  } finally {
+    resettingGit = false
+    await poll($, 'git', true)
+  }
+  return true
+}
+
 // CoreAPI's database toggle: "local db" offers Docker, "docker db" offers local; any other state offers nothing
 const dbSwitchTarget = (l) => (l?.value === 'local db' ? 'docker' : l?.value === 'docker db' ? 'local' : undefined)
 let switchingDb = false
@@ -436,35 +498,65 @@ const announced = new Set()
 let startBranch = ''
 let compacting = false
 
-// Tests never sit at "not run": when nothing is recorded for this repo, run its unit tests once and record the result
+// The two test lights: backend (C#) keeps the original store key so an older record still loads
+const TEST_KINDS = {
+  be: { light: 'tests', store: 'last-test:' },
+  fe: { light: 'fe-tests', store: 'last-test-fe:' },
+}
+
+// Shows a finished run on its light and remembers it for the next session
+async function recordTestRun($, run, command, at) {
+  const kind = testKind(run)
+  if (!kind) return
+  setLight(TEST_KINDS[kind].light, testLight(run, command, at, at, kind), at)
+  await $.store.set(TEST_KINDS[kind].store + repoRoot, { run, command, at })
+}
+
+// npm and npx are .cmd shims on Windows, which cannot be started without a shell
+const shellWrap = (argv) => (isWindows && (argv[0] === 'npm' || argv[0] === 'npx') ? ['cmd', '/c', ...argv] : argv)
+
+// What to run when a kind has no recorded run: { argv, cwd, shown } or undefined when this repo has nothing to run
+async function autoTestPlan($, kind) {
+  const custom = String((kind === 'be' ? opts.auto_test_command : opts.auto_fe_test_command) ?? '').split(' ').filter(Boolean)
+  if (custom.length) return { argv: shellWrap(custom), cwd: repoRoot, shown: custom.join(' ') }
+  const find = async (glob) => String((await $.process.run(['git', '-C', repoRoot, 'ls-files', glob], { timeoutMs: 15_000 })).stdout ?? '').split('\n').map((x) => x.trim()).find(Boolean)
+  if (kind === 'be') {
+    const proj = await find('bff/Tests/*UnitTests*.csproj')
+    return proj ? { argv: ['dotnet', 'test', proj, '--nologo'], cwd: repoRoot, shown: 'dotnet test ' + proj + ' --nologo' } : undefined
+  }
+  if (!(await find('phoenix-ui/package.json'))) return undefined
+  const npm = ['npm', 'run', 'test', '--', '--silent']
+  return { argv: shellWrap(npm), cwd: repoRoot + '/phoenix-ui', shown: npm.join(' ') }
+}
+
+// Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it once and record the result.
+// Backend first, then front end, so the two suites do not compete for the CPU.
 let autoTesting = false
 async function autoRunTests($) {
-  if (autoTesting || !repoRoot || lights.tests?.value !== 'not run') return
+  if (autoTesting || !repoRoot) return
   autoTesting = true
   try {
-    let argv = String(opts.auto_test_command ?? '').split(' ').filter(Boolean)
-    if (!argv.length) {
-      const r = await $.process.run(['git', '-C', repoRoot, 'ls-files', 'bff/Tests/*UnitTests*.csproj'], { timeoutMs: 15_000 })
-      const proj = String(r.stdout ?? '').split('\n').map((x) => x.trim()).find(Boolean)
-      if (proj) argv = ['dotnet', 'test', proj, '--nologo']
-    }
-    if (!argv.length) return
-    const command = argv.join(' ')
-    setLight('tests', { color: COLORS.working, value: 'running', short: 'No test run was recorded for this repo, so Dragon is running: ' + shorten(command, 90), detail: [] }, await $.clock.now())
-    $.ui.invalidate('ui.render')
-    const r = await $.process.run(argv, { cwd: repoRoot, timeoutMs: 600_000 })
-    const run = parseTestRun(command, [r.stdout, r.stderr].filter(Boolean).join('\n'))
-    const at = await $.clock.now()
-    if (run) {
-      setLight('tests', testLight(run, command, at, at), at)
-      await $.store.set('last-test:' + repoRoot, { run, command, at })
-    } else {
-      setLight('tests', { color: COLORS.amber, value: 'unclear', short: 'Ran ' + shorten(command, 90) + ' but found no pass/fail summary in its output', detail: [] }, at)
-    }
-  } catch (err) {
-    setLight('tests', { color: COLORS.amber, value: 'unclear', short: 'The automatic test run failed: ' + shorten(err?.message ?? err, 100), detail: [] }, await $.clock.now())
+    for (const kind of ['be', 'fe']) await autoRunKind($, kind)
   } finally {
     autoTesting = false
+  }
+}
+
+async function autoRunKind($, kind) {
+  const light = TEST_KINDS[kind].light
+  if (lights[light]?.value !== 'not run') return
+  try {
+    const plan = await autoTestPlan($, kind)
+    if (!plan) return
+    setLight(light, { color: COLORS.working, value: 'running', short: 'No test run was recorded for this repo, so Dragon is running: ' + shorten(plan.shown, 90), detail: [] }, await $.clock.now())
+    $.ui.invalidate('ui.render')
+    const r = await $.process.run(plan.argv, { cwd: plan.cwd, timeoutMs: 900_000 })
+    const run = parseTestRun(plan.shown, [r.stdout, r.stderr].filter(Boolean).join('\n'))
+    const at = await $.clock.now()
+    if (run && testKind(run) === kind) await recordTestRun($, run, plan.shown, at)
+    else setLight(light, { color: COLORS.amber, value: 'unclear', short: 'Ran ' + shorten(plan.shown, 90) + ' but found no pass/fail summary in its output', detail: [] }, at)
+  } catch (err) {
+    setLight(light, { color: COLORS.amber, value: 'unclear', short: 'The automatic test run failed: ' + shorten(err?.message ?? err, 100), detail: [] }, await $.clock.now())
   }
 }
 
@@ -622,7 +714,7 @@ function sleepyAfterMs() {
 
 // Called once a minute: redraw only when the dragon has just dozed off
 function checkSleepy($) {
-  const asleep = moodNow().key === 'sleepy'
+  const asleep = moodNow().asleep
   if (asleep !== wasSleepy) {
     wasSleepy = asleep
     $.ui.invalidate('ui.render')
@@ -645,7 +737,9 @@ function moodNow() {
   })
   const mood = MOODS[key]
   const short = key === 'tool' && session.tool ? 'Claude is running ' + session.tool : mood.short
-  return { key, ...mood, short }
+  // Asleep is the sprite's pose; a mood with its own color (mail, context, error) keeps that color while it dozes
+  const asleep = isAsleep({ session: session.state, typing: session.typing, idleMs: Date.now() - lastActivity, sleepyAfterMs: sleepyAfterMs() })
+  return { key, ...mood, label: asleep && key !== 'sleepy' ? mood.label + ' · Asleep' : mood.label, short, asleep }
 }
 
 // Jira, PRs and commits changed since the previous working day, gathered in parallel.
@@ -732,9 +826,15 @@ export function register(on, options) {
       if (cached) lights[s.id] = cached
     }
     // The last test run Claude saw in this repo, from any earlier session
-    const lastTest = await $.store.get('last-test:' + repoRoot)
     const startNow = await $.clock.now()
-    setLight('tests', lastTest?.run ? testLight(lastTest.run, lastTest.command, lastTest.at, startNow) : testLight(undefined), startNow)
+    const beRecord = await $.store.get(TEST_KINDS.be.store + repoRoot)
+    const feRecord = await $.store.get(TEST_KINDS.fe.store + repoRoot)
+    // Before the split the one record held whichever runner ran last, so a Jest run may still sit in the backend slot
+    const records = { be: testKind(beRecord?.run) === 'be' ? beRecord : undefined, fe: feRecord ?? (testKind(beRecord?.run) === 'fe' ? beRecord : undefined) }
+    for (const kind of ['be', 'fe']) {
+      const rec = records[kind]
+      setLight(TEST_KINDS[kind].light, rec?.run ? testLight(rec.run, rec.command, rec.at, startNow, kind) : testLight(undefined, undefined, undefined, undefined, kind), startNow)
+    }
     suggestionsOff = opts.skill_suggestions === 'off' || (await $.store.get('suggestions-off')) === true
     affinity = (await $.store.get('skill-affinity')) ?? {}
     lastActivity = Date.now()
@@ -793,11 +893,7 @@ export function register(on, options) {
       if (testCommand) {
         const out = result?.result
         const run = parseTestRun(testCommand, typeof out === 'string' ? out : [out?.stdout, out?.stderr].filter(Boolean).join('\n'))
-        if (run) {
-          const at = await $.clock.now()
-          setLight('tests', testLight(run, testCommand, at, at), at)
-          await $.store.set('last-test:' + repoRoot, { run, command: testCommand, at })
-        }
+        if (run) await recordTestRun($, run, testCommand, await $.clock.now())
       }
       return result
     } finally {
@@ -900,13 +996,15 @@ export function register(on, options) {
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, (e.props?.bodyColumns ?? 80) - SPRITE_WIDTH - 2)
     const mood = moodNow()
-    const f = flapTimer ? FLAP[frame] : mood.key === 'sleepy' ? SLEEP : IDLE
+    const f = flapTimer ? FLAP[frame] : mood.asleep ? SLEEP : IDLE
 
     const dragon = Box({
       key: 'drg-dragon',
       flexDirection: 'column',
-      // The light rows make the band taller than the sprite: sit it in the middle of them instead of at the top
-      alignSelf: 'center',
+      // The light rows make the band taller than the sprite: sit it in the middle of them instead of at the top.
+      // alignSelf: 'center' rounds the odd leftover row down onto the bottom, one row too low, so the offset is explicit.
+      alignSelf: 'flex-start',
+      marginTop: 1,
       width: SPRITE_WIDTH + 1,
       hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>
@@ -963,7 +1061,8 @@ export function register(on, options) {
           ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off')).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
-            const open = () => {
+            const open = async () => {
+              if (s.id === 'git' && (await reviewChanges($))) return
               const url = lightUrl(s.id)
               if (url) openUrl($, url)
               else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })

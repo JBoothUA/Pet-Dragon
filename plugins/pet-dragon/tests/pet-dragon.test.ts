@@ -4,6 +4,7 @@ import {
   SLEEP,
   IDLE,
   pickMood,
+  isAsleep,
   parseGitStatus,
   gitLight,
   pipelineLight,
@@ -19,6 +20,9 @@ import {
   dayStats,
   dayLight,
   parseWorktrees,
+  prNumber,
+  dirtySummary,
+  approvedByMe,
   worktreeLight,
   headline,
   pulseBright,
@@ -33,6 +37,7 @@ import {
   parseTestRun,
   isTestCommand,
   testLight,
+  testKind,
   indexSkills,
   suggestSkills,
   pathSignals,
@@ -232,7 +237,7 @@ test('the repo row shows git, pipeline and Seq lights after the first polls', as
   expect(await ui.find({ type: 'Text', text: /Git: feat\/C3-1-thing: 2 uncommitted, 2 to push/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Pipelines: Latest pipeline #3115 on feat\/C3-1-thing passed/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Seq errors: 1 error\(s\) in Seq/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Tests: No test run recorded yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Backend tests .*: No backend test run recorded yet/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -244,7 +249,7 @@ test('a test run Claude starts lights the Tests light', async ($, on) => {
   await clock.advance(1_000)
 
   const ui = await $.ui.mount(BAND)
-  expect(await ui.find({ type: 'Text', text: /Tests: dotnet run: 2 failed, 10 passed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Backend tests .*: dotnet run: 2 failed, 10 passed/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -320,9 +325,14 @@ test('Dragon falls asleep after a long idle gap, and typing or work wakes it', (
   expect(pickMood({ ...base, idleMs: 20 * 60_000 })).toBe('sleepy')
   // Typing and active work beat sleep
   expect(pickMood({ ...base, idleMs: 99 * 60_000, typing: true })).toBe('typing')
-  // ...except the quiet moods: unread mail and a full context window do not keep it awake
-  expect(pickMood({ ...base, idleMs: 99 * 60_000, unread: 2 })).toBe('sleepy')
-  expect(pickMood({ ...base, idleMs: 99 * 60_000, contextPct: 95 })).toBe('sleepy')
+  // Mail and context keep their color while the dragon dozes: only the green default turns sleepy grey
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, unread: 2 })).toBe('unread')
+  expect(isAsleep({ ...base, idleMs: 99 * 60_000, unread: 2 })).toBe(true)
+  expect(isAsleep({ ...base, idleMs: 99 * 60_000, session: 'working' })).toBe(false)
+  expect(isAsleep({ ...base, idleMs: 99 * 60_000, typing: true })).toBe(false)
+  expect(isAsleep({ ...base, idleMs: 1_000 })).toBe(false)
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, contextPct: 95 })).toBe('context')
+  expect(pickMood({ ...base, idleMs: 99 * 60_000, session: 'error' })).toBe('error')
   expect(pickMood({ ...base, idleMs: 1_000, unread: 2 })).toBe('unread')
   expect(pickMood({ ...base, idleMs: 99 * 60_000, session: 'working' })).toBe('working')
   // 0 turns sleep off; a caller that passes no timings never sleeps
@@ -610,4 +620,34 @@ test('worktree light names the current worktree and lists the rest', () => {
   const only = worktreeLight(parseWorktrees('worktree C:/Dev/C3\nHEAD a\nbranch refs/heads/development\n'), 'C:/Dev/C3')
   expect(only.brief).toEqual(['\u25cf C3 (development)', 'your only worktree'])
   expect(worktreeLight(undefined, 'x').value).toBe('?')
+})
+
+test('PRs you already approved drop out of the review list', () => {
+  expect(prNumber('https://bitbucket.org/keyhealthtech/phoenix/pull-requests/14780')).toBe(14780)
+  const me = '712020:me'
+  const pr = (id, who, approved) => ({ ok: true, data: { id, participants: [{ user: { account_id: who }, approved }, { user: { account_id: 'other' }, approved: true }] } })
+  const done = approvedByMe({ items: [pr(1, me, true), pr(2, me, false), pr(3, 'someone', true), { ok: false }] }, me)
+  expect([...(done ?? [])]).toEqual([1])
+  expect(approvedByMe({}, me)).toBeUndefined()
+  expect(approvedByMe({ items: [] }, '')).toBeUndefined()
+})
+
+test('backend and front-end test runs each get their own light', () => {
+  expect(testKind({ runner: 'dotnet', passed: 1, failed: 0 })).toBe('be')
+  expect(testKind({ runner: 'jest', passed: 1, failed: 0 })).toBe('fe')
+  expect(testKind({ runner: 'k6', passed: 1, failed: 0 })).toBeUndefined()
+  expect(testKind(undefined)).toBeUndefined()
+  expect(testLight(undefined, undefined, undefined, undefined, 'be').short).toContain('C# test run')
+  expect(testLight(undefined, undefined, undefined, undefined, 'fe').short).toContain('Jest run')
+  expect(testLight(undefined, undefined, undefined, undefined, 'fe').short).toContain('remembers the last one between sessions')
+})
+
+test('clicking a dirty Git light lists the files and says what reset does', () => {
+  const q = dirtySummary([' M src/a.ts', '?? notes.txt'], 'feat/x')
+  expect(q).toContain('2 uncommitted change(s) on feat/x:')
+  expect(q).toContain('   M src/a.ts')
+  expect(q).toContain('the 1 untracked ?? file(s) stay')
+  expect(q).toContain('Reset them, or keep them?')
+  const many = dirtySummary(Array.from({ length: 20 }, (_, i) => ' M f' + i + '.ts'), 'b', 15)
+  expect(many).toContain('and 5 more')
 })
