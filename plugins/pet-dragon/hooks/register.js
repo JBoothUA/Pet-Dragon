@@ -810,7 +810,8 @@ async function printStandup($) {
   standupBusy = true
   $.ui.toast('Dragon is gathering your standup…')
   try {
-    $.ui.log(await runStandup($))
+    // One log call is one row, so a multi-line table is printed a line at a time to keep its columns
+    for (const line of (await runStandup($)).split('\n')) $.ui.log(line)
   } catch (err) {
     $.ui.log('Standup failed: ' + shorten(err?.message ?? err, 100))
   }
