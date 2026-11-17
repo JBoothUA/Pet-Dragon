@@ -468,20 +468,39 @@ export function dayLight(st, limit = DAILY_LIMIT_USD) {
   }
 }
 
-// Tickets you are carrying right now (Jira's "In Progress" category: In Progress, Code Review, Ready for QA).
-// Amber when one has not been touched for STALE_TICKET_DAYS; Jira's "updated" stands in for "time in this status".
-export const STALE_TICKET_DAYS = 3
-export function mineLight(json, nowMs) {
-  const issues = json?.data?.issues
-  if (!Array.isArray(issues)) return { color: COLORS.grey, value: '?', short: 'Could not read Jira (is twg logged in?)', detail: [] }
-  const days = (i) => (typeof nowMs === 'number' && Date.parse(i.updated) ? Math.floor((nowMs - Date.parse(i.updated)) / 86_400_000) : 0)
-  const mine = issues.filter((i) => i.status?.statusCategory?.key === 'indeterminate').sort((a, b) => days(b) - days(a))
-  if (mine.length === 0) return { color: COLORS.green, value: '0', short: 'None of your tickets is in progress', detail: [] }
-  const stale = mine.filter((i) => days(i) >= STALE_TICKET_DAYS)
-  const detail = mine.map((i) => link(i.key + '  ' + (i.status?.name ?? '?') + '  ' + days(i) + 'd  ' + (i.summary ?? ''), i.url))
-  const short =
-    mine.length + ' ticket(s) in flight' + (stale.length ? ', ' + stale.length + ' untouched for ' + STALE_TICKET_DAYS + '+ days (oldest ' + stale[0].key + ', ' + days(stale[0]) + 'd)' : ', all moved in the last ' + STALE_TICKET_DAYS + ' days')
-  return { color: stale.length ? COLORS.amber : COLORS.teal, value: String(mine.length), short, detail }
+// `git worktree list --porcelain`: blank-line separated blocks of "worktree <path>", "HEAD <sha>", "branch refs/heads/<name>" | "detached"
+export function parseWorktrees(text) {
+  if (!text) return undefined
+  const out = []
+  for (const block of String(text).split(/\r?\n\r?\n/)) {
+    const wt = { path: '', branch: '', detached: false, prunable: false }
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith('worktree ')) wt.path = line.slice(9).trim()
+      else if (line.startsWith('branch ')) wt.branch = line.slice(7).trim().replace('refs/heads/', '')
+      else if (line === 'detached') wt.detached = true
+      else if (line.startsWith('prunable')) wt.prunable = true
+    }
+    if (wt.path) out.push(wt)
+  }
+  return out.length ? out : undefined
+}
+
+// The worktree this session is in; the hover and the /dragon pane list all of them. list[0] is the main checkout.
+export function worktreeLight(list, root) {
+  if (!Array.isArray(list)) return { color: COLORS.grey, value: '?', short: 'Not inside a git repository (no worktrees to list)', detail: [] }
+  const norm = (x) => String(x ?? '').split(String.fromCharCode(92)).join('/').replace(/\/+$/, '').toLowerCase()
+  const name = (x) => x.path.replace(/\/+$/, '').split('/').pop() || x.path
+  const at = list.findIndex((w) => norm(w.path) === norm(root))
+  const cur = at >= 0 ? list[at] : undefined
+  const label = (w) => (w.branch || (w.detached ? 'detached HEAD' : '?')) + (w.prunable ? ' (missing folder)' : '')
+  const detail = list.map((w) => (w === cur ? '\u25cf ' : '  ') + name(w) + '  ' + label(w) + '  ' + w.path)
+  const brief = list.map((w) => (w === cur ? '\u25cf ' : '') + name(w) + ' (' + (w.branch || 'detached') + ')')
+  const shortName = cur ? name(cur) : '?'
+  const value = shortName.length > 16 ? shortName.slice(0, 15) + '\u2026' : shortName
+  const short = cur
+    ? 'You are in worktree "' + name(cur) + '" on ' + label(cur) + (at === 0 ? ' (the main checkout)' : ' (a linked worktree)') + '. ' + list.length + ' worktree(s) in this repo'
+    : 'This folder is not one of the repo\'s ' + list.length + ' worktree(s)'
+  return { color: at > 0 ? COLORS.teal : COLORS.green, value, short, detail, brief }
 }
 
 // What needs you right now, from the lights: amber and red lights, worst first.

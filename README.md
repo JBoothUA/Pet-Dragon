@@ -37,7 +37,7 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | BFF | Whether the BFF is running (green **up**) or not (grey **off**) | `scripts/ports-probe.ps1`: is anything listening on `bff_port` |
 | MD | Whether the MoveDocs API is running (green **up**) or not (grey **off**) | `scripts/ports-probe.ps1`: is anything listening on `movedocs_port` |
 | Jira | Your open issues | `twg jira workitem query` |
-| Mine | Your Jira tickets in flight (In Progress, Code Review, Ready for QA). Amber when one has not been touched for 3 days (Jira's last update stands in for time in status) | The same `twg` query as Jira |
+| Tree | The git worktree this session is in (green for the main checkout, teal for a linked one). Hover lists every worktree with its branch; click opens the `/dragon` pane with their folders | `git worktree list --porcelain` |
 | PRs | Your PRs that are still open (drafts included; merged and declined PRs are not counted), with age and comment count in `/dragon` | `twg prs query --role author --state open` |
 | Mail | Unread Inbox count | Classic Outlook, through COM. It never launches Outlook |
 | Teams | Whether Teams is running (green) or not (grey). It does not count unread chats: Teams has no local API for that | `Get-Process ms-teams` |
@@ -67,7 +67,7 @@ Light colors:
 
 **Explanations.** Hover over Dragon or a light to see a short explanation on the third line. Hover needs mouse support in your terminal; it works best in fullscreen mode. `/dragon` always works. It opens a pane with every light's details, issue and PR lists, the color legend, and three buttons: **r** refreshes everything, **u** gathers your standup into the pane, and **s** turns skill suggestions on or off.
 
-**Headline and flashes.** A one-line headline under the caption says `All clear`, or `2 need you: Tests unclear · Core off` (amber and red lights, worst first). When a light's value or color changes it flashes for about three seconds (filled dot, highlighted value) so you notice without watching.
+**Headline and flashes.** A one-line headline under the caption says `All clear`, or `2 need you: Tests unclear · Core off` (amber and red lights, worst first; Ship and Today are never counted, since neither is something you can act on right now). When a light's value or color changes it flashes for about three seconds (filled dot, highlighted value) so you notice without watching.
 
 ## Skill suggestions
 

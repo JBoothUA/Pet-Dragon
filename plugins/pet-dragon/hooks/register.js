@@ -28,7 +28,8 @@ import {
   ctxLight,
   dayStats,
   dayLight,
-  mineLight,
+  parseWorktrees,
+  worktreeLight,
   headline,
   PULSE_STEP_MS,
   pulsing,
@@ -111,7 +112,7 @@ const SOURCES = [
   { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
-  { id: 'mine', label: 'Mine', title: 'Your tickets in flight', row: 4, parent: 'jira' },
+  { id: 'tree', label: 'Tree', title: 'Current worktree', row: 4, parent: 'git' },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
@@ -188,7 +189,7 @@ function lightUrl(id) {
   if (id === 'coreapi') return 'http://localhost:' + opts.coreapi_port + '/swagger'
   if (id === 'bff') return 'https://localhost:' + opts.bff_port + '/swagger'
   if (id === 'movedocs') return 'https://localhost:' + opts.movedocs_port + '/swagger'
-  if (id === 'jira' || id === 'mine') return opts.jira_board_url
+  if (id === 'jira') return opts.jira_board_url
   if (id === 'bitbucket') return opts.pr_list_url
   if (id === 'pipeline') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
   if (id === 'seq') return opts.seq_url
@@ -260,9 +261,7 @@ async function poll($, id, force) {
         ['twg', 'jira', 'workitem', 'query', '--jql', opts.jira_jql, '--limit', '50', '-o', 'json', '--output-summary', 'none'],
         { timeoutMs: 90_000 },
       )
-      const json = parseJson(r.stdout)
-      setLight(key, jiraLight(json), now)
-      setLight('mine', mineLight(json, now), now)
+      setLight(key, jiraLight(parseJson(r.stdout)), now)
     } else if (key === 'bitbucket') {
       const prQuery = (role) =>
         $.process.run(['twg', 'prs', 'query', '--scope', 'me', '--role', role, '--state', 'open', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 180_000 })
@@ -270,10 +269,16 @@ async function poll($, id, force) {
       setLight(key, prLight(parseJson(r.stdout), opts.pr_repo_id), now)
       setLight('reviews', reviewLight(parseJson(rv.stdout), opts.pr_repo_id), now)
     } else if (key === 'git') {
-      if (!repoRoot) setLight(key, gitLight(undefined), now)
-      else {
-        const r = await $.process.run(['git', '-C', repoRoot, 'status', '--porcelain=v2', '--branch'], { timeoutMs: 20_000 })
+      if (!repoRoot) {
+        setLight(key, gitLight(undefined), now)
+        setLight('tree', worktreeLight(undefined), now)
+      } else {
+        const [r, wt] = await Promise.all([
+          $.process.run(['git', '-C', repoRoot, 'status', '--porcelain=v2', '--branch'], { timeoutMs: 20_000 }),
+          $.process.run(['git', '-C', repoRoot, 'worktree', 'list', '--porcelain'], { timeoutMs: 20_000 }),
+        ])
         setLight(key, gitLight(r.exitCode === 0 ? parseGitStatus(r.stdout) : undefined, opts.bitbucket_repo), now)
+        setLight('tree', worktreeLight(wt.exitCode === 0 ? parseWorktrees(wt.stdout) : undefined, repoRoot), now)
       }
     } else if (key === 'pipeline') {
       if (!lights.git?.branch) await poll($, 'git', true)
@@ -624,7 +629,9 @@ function checkSleepy($) {
   }
 }
 
-const currentHeadline = () => headline(SOURCES.map((s) => ({ label: s.label, light: lights[s.id] })))
+// Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
+const NOT_FOR_HEADLINE = new Set(['ship', 'day'])
+const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.label, light: lights[s.id] })))
 
 function moodNow() {
   const key = pickMood({

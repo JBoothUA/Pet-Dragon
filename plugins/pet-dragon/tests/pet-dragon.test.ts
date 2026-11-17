@@ -18,7 +18,8 @@ import {
   ctxLight,
   dayStats,
   dayLight,
-  mineLight,
+  parseWorktrees,
+  worktreeLight,
   headline,
   pulseBright,
   pulsing,
@@ -568,20 +569,6 @@ test('meetings light counts what is still to come and names tomorrow\'s first me
   expect(shouldRemindMeeting(at(16, 5), 10_000, '2026-11-16')).toBe(false)
 })
 
-test('mineLight counts tickets in flight and flags stale ones', () => {
-  const now = Date.parse('2026-11-16T12:00:00Z')
-  const mk = (key, cat, updated) => ({ key, url: 'u', summary: 's', status: { name: 'X', statusCategory: { key: cat } }, updated })
-  const fresh = mineLight({ data: { issues: [mk('C3-1', 'indeterminate', '2026-11-16T08:00:00Z'), mk('C3-2', 'new', '2026-11-01T08:00:00Z')] } }, now)
-  expect(fresh.value).toBe('1')
-  expect(fresh.color).toBe('#1de9b6')
-  const stale = mineLight({ data: { issues: [mk('C3-1', 'indeterminate', '2026-11-16T08:00:00Z'), mk('C3-3', 'indeterminate', '2026-11-10T08:00:00Z')] } }, now)
-  expect(stale.value).toBe('2')
-  expect(stale.color).toBe('#ffc107')
-  expect(stale.short).toContain('oldest C3-3, 6d')
-  expect(mineLight({ data: { issues: [] } }, now).value).toBe('0')
-  expect(mineLight(undefined, now).value).toBe('?')
-})
-
 test('headline names what needs you, and Ready is green', () => {
   const g = { color: '#3ddc84', value: 'ok' }
   expect(headline([{ label: 'Git', light: g }])).toMatchObject({ level: 'green', text: 'All clear', color: '#3ddc84' })
@@ -603,4 +590,20 @@ test('a changed light flashes for a moment, then settles', () => {
   expect(pulseBright(l, 10_400)).toBe(false)
   expect(pulsing(l, 13_000)).toBe(false)
   expect(pulsing({}, 10_000)).toBe(false)
+})
+
+test('worktree light names the current worktree and lists the rest', () => {
+  const text = 'worktree C:/Dev/C3\nHEAD abc\nbranch refs/heads/development\n\nworktree C:/Dev/C3-wt-10162\nHEAD def\nbranch refs/heads/feat/C3-10162-adjust\n\nworktree C:/Dev/old\nHEAD 123\ndetached\nprunable gitdir file points to non-existent location\n'
+  const list = parseWorktrees(text)
+  expect(list?.length).toBe(3)
+  const linked = worktreeLight(list, 'C:\\Dev\\C3-wt-10162')
+  expect(linked.value).toBe('C3-wt-10162')
+  expect(linked.color).toBe('#1de9b6')
+  expect(linked.short).toContain('a linked worktree')
+  expect(linked.brief).toEqual(['C3 (development)', '\u25cf C3-wt-10162 (feat/C3-10162-adjust)', 'old (detached)'])
+  expect(linked.detail[2]).toContain('missing folder')
+  const main = worktreeLight(list, 'c:/dev/c3/')
+  expect(main.value).toBe('C3')
+  expect(main.color).toBe('#3ddc84')
+  expect(worktreeLight(undefined, 'x').value).toBe('?')
 })
