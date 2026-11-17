@@ -500,7 +500,7 @@ let compacting = false
 
 // The two test lights: backend (C#) keeps the original store key so an older record still loads
 const TEST_KINDS = {
-  be: { light: 'tests', store: 'last-test:' },
+  be: { light: 'tests', store: 'last-test-all:' },
   fe: { light: 'fe-tests', store: 'last-test-fe:' },
 }
 
@@ -515,24 +515,27 @@ async function recordTestRun($, run, command, at) {
 // npm and npx are .cmd shims on Windows, which cannot be started without a shell
 const shellWrap = (argv) => (isWindows && (argv[0] === 'npm' || argv[0] === 'npx') ? ['cmd', '/c', ...argv] : argv)
 
-// What to run when a kind has no recorded run: { argv, cwd, shown } or undefined when this repo has nothing to run
+// What to run when a kind has no recorded run: { cwd, shown, parts: [{ argv, label }] } or undefined when this repo has nothing to run.
+// A kind is the TOTAL for the repo, so it is several runs added up: one $.process.run lasts ten minutes at most, which a whole
+// suite never fits in. Backend = every C# test project; front end = the whole Jest suite as FE_SHARDS --shard parts.
+const FE_SHARDS = 24
 async function autoTestPlan($, kind) {
   const custom = String((kind === 'be' ? opts.auto_test_command : opts.auto_fe_test_command) ?? '').split(' ').filter(Boolean)
-  if (custom.length) return { argv: shellWrap(custom), cwd: repoRoot, shown: custom.join(' ') }
-  const find = async (glob) => String((await $.process.run(['git', '-C', repoRoot, 'ls-files', glob], { timeoutMs: 15_000 })).stdout ?? '').split('\n').map((x) => x.trim()).find(Boolean)
+  if (custom.length) return { cwd: repoRoot, shown: custom.join(' '), parts: [{ argv: shellWrap(custom), label: '' }] }
+  const list = async (glob) => String((await $.process.run(['git', '-C', repoRoot, 'ls-files', glob], { timeoutMs: 15_000 })).stdout ?? '').split('\n').map((x) => x.trim()).filter(Boolean)
   if (kind === 'be') {
-    const proj = await find('bff/Tests/*UnitTests*.csproj')
-    return proj ? { argv: ['dotnet', 'test', proj, '--nologo'], cwd: repoRoot, shown: 'dotnet test ' + proj + ' --nologo' } : undefined
+    const projects = (await list('*Tests*.csproj')).filter((p) => !/TestHelpers/i.test(p))
+    const parts = projects.map((p) => ({ argv: ['dotnet', 'test', p, '--nologo'], label: p.split('/').pop().replace(/\.csproj$/, '') }))
+    return parts.length ? { cwd: repoRoot, shown: 'dotnet test, all ' + parts.length + ' test projects', parts } : undefined
   }
-  if (!(await find('phoenix-ui/package.json'))) return undefined
-  // The whole Jest suite is 1,200+ files and runs for 40+ minutes, but one $.process.run lasts ten minutes at most,
-  // so the full suite runs as FE_SHARDS Jest shards one after another and the results are added up
+  if (!(await list('phoenix-ui/package.json')).length) return undefined
   const npm = ['npm', 'run', 'test', '--', '--silent']
-  return { argv: shellWrap(npm), cwd: repoRoot + '/phoenix-ui', shown: npm.join(' ') + ' (full suite)', shards: FE_SHARDS }
+  const parts = Array.from({ length: FE_SHARDS }, (_, i) => ({ argv: shellWrap([...npm, '--shard=' + (i + 1) + '/' + FE_SHARDS]), label: 'part ' + (i + 1) + ' of ' + FE_SHARDS }))
+  return { cwd: repoRoot + '/phoenix-ui', shown: 'npm run test, full suite in ' + FE_SHARDS + ' parts', parts }
 }
 
-const FE_SHARDS = 24
-const shardTotals = {}
+// Parts already finished, kept for the second attempt so only the one that failed runs again
+const partTotals = {}
 
 // Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it and record the result.
 // Backend first, then front end, so the two suites do not compete for the CPU.
@@ -543,7 +546,7 @@ async function autoRunTests($) {
 }
 
 // force: re-run even though the light says "unclear" (a click on it), not only when nothing is recorded.
-// A run that ends without a pass/fail summary is tried once more before the light gives up on it.
+// A part that ends without a pass/fail summary is tried once more before the light gives up on it.
 async function runTestKind($, kind, force) {
   const light = TEST_KINDS[kind].light
   const value = lights[light]?.value
@@ -552,34 +555,35 @@ async function runTestKind($, kind, force) {
   try {
     const plan = await autoTestPlan($, kind)
     if (!plan) return
-    const shards = plan.shards ?? 1
+    const count = plan.parts.length
     for (const attempt of [1, 2]) {
       let unclear
       let tail = []
-      // Shards that already finished are kept on the second attempt, so only the one that failed runs again
-      const total = attempt === 2 && shardTotals[kind] ? shardTotals[kind] : { passed: 0, failed: 0, next: 1 }
-      shardTotals[kind] = total
+      const total = attempt === 2 && partTotals[kind] ? partTotals[kind] : { passed: 0, failed: 0, next: 0 }
+      partTotals[kind] = total
       try {
-        for (; total.next <= shards; total.next++) {
-          const label = shards > 1 ? ' (part ' + total.next + ' of ' + shards + ')' : ''
-          // The value is the running count, like the finished light; which part is running goes in the hover
+        for (; total.next < count; total.next++) {
+          const part = plan.parts[total.next]
+          // The value is the running TOTAL, like the finished light; which part is running goes in the hover
           const sofar = total.failed > 0 ? total.failed + ' fail…' : total.passed > 0 ? total.passed + ' pass…' : 'running'
-          const progress = shards > 1 ? 'Part ' + total.next + ' of ' + shards + ' running; so far ' + total.passed + ' passed, ' + total.failed + ' failed. ' : ''
-          setLight(light, { color: total.failed > 0 ? COLORS.red : COLORS.working, value: sofar, short: progress + (attempt === 2 ? 'The first run gave no result, so Dragon is running it again: ' : 'No test run was recorded for this repo, so Dragon is running: ') + shorten(plan.shown, 90), detail: [] }, await $.clock.now())
+          const where = count > 1 ? 'Part ' + (total.next + 1) + ' of ' + count + ' (' + part.label + ') running; so far ' + total.passed + ' passed, ' + total.failed + ' failed. ' : ''
+          setLight(light, { color: total.failed > 0 ? COLORS.red : COLORS.working, value: sofar, short: where + (attempt === 2 ? 'A part gave no result, so Dragon is running it again. ' : 'No test run was recorded for this repo, so Dragon is running ' + plan.shown + '. '), detail: [] }, await $.clock.now())
           $.ui.invalidate('ui.render')
-          const argv = shards > 1 ? [...plan.argv, '--shard=' + total.next + '/' + shards] : plan.argv
-          const r = await $.process.run(argv, { cwd: plan.cwd, timeoutMs: 600_000 })
+          const r = await $.process.run(part.argv, { cwd: plan.cwd, timeoutMs: 600_000 })
           const output = [r.stdout, r.stderr].filter(Boolean).join('\n')
-          const run = parseTestRun(plan.shown, output)
-          if (!run || testKind(run) !== kind) {
+          const run = parseTestRun(part.argv.join(' '), output)
+          if (run && testKind(run) === kind) {
+            total.passed += run.passed
+            total.failed += run.failed
+          } else if (kind === 'be' && /No test is available|no test source/i.test(output)) {
+            // A helper project that carries no tests adds nothing
+          } else {
             // What the run actually said, so an unclear light explains itself on hover
             tail = output.split('\n').map((l) => l.trim()).filter(Boolean).slice(-4).map((l) => shorten(l, 110))
-            throw new Error('Ran ' + shorten(plan.shown, 80) + label + ' (exit ' + r.exitCode + ') but found no pass/fail summary in its output')
+            throw new Error('Part ' + (total.next + 1) + ' of ' + count + ' (' + part.label + ', exit ' + r.exitCode + ') gave no pass/fail summary')
           }
-          total.passed += run.passed
-          total.failed += run.failed
         }
-        delete shardTotals[kind]
+        delete partTotals[kind]
         await recordTestRun($, { runner: kind === 'be' ? 'dotnet' : 'jest', passed: total.passed, failed: total.failed }, plan.shown, await $.clock.now())
         return
       } catch (err) {
