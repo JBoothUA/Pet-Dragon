@@ -686,8 +686,8 @@ export function driftLight(d) {
   const detail = [d.behind + ' commit(s) behind origin/development', o.length + ' of your changed file(s) also changed on development']
   for (const f of o.slice(0, 8)) detail.push(f)
   if (o.length > 8) detail.push('…and ' + (o.length - 8) + ' more')
-  if (o.length) return { color: COLORS.red, value: d.behind + '↓ ' + o.length + ' clash', short: o.length + ' file(s) you changed were also changed on development (' + o.slice(0, 3).join(', ') + (o.length > 3 ? ', …' : '') + '). Expect a merge conflict; consider merging development now', detail }
-  if (d.behind) return { color: COLORS.amber, value: d.behind + '↓', short: d.branch + ' is ' + d.behind + ' commit(s) behind origin/development, but none of your changed files overlap', detail }
+  if (o.length) return { color: COLORS.red, value: '↓' + d.behind + ' ' + o.length + ' clash', short: o.length + ' file(s) you changed were also changed on development (' + o.slice(0, 3).join(', ') + (o.length > 3 ? ', …' : '') + '). Expect a merge conflict; consider merging development now', detail }
+  if (d.behind) return { color: COLORS.amber, value: '↓' + d.behind, short: d.branch + ' is ' + d.behind + ' commit(s) behind origin/development, but none of your changed files overlap', detail }
   return { color: COLORS.green, value: 'synced', short: d.branch + ' has everything on origin/development', detail }
 }
 

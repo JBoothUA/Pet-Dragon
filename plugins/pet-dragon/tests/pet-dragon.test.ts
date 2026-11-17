@@ -453,7 +453,7 @@ test('branch drift warns on overlapping files', () => {
   expect(driftLight({ branch: 'b', behind: 4, overlap: [] }).color).toBe('#ffc107')
   const d = driftLight({ branch: 'b', behind: 4, overlap: ['a.cs', 'b.cs'] })
   expect(d.color).toBe('#ff5252')
-  expect(d.value).toBe('4↓ 2 clash')
+  expect(d.value).toBe('↓4 2 clash')
   expect(driftLight(undefined).value).toBe('?')
 })
 
