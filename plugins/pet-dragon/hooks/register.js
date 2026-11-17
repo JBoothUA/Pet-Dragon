@@ -361,7 +361,10 @@ async function poll($, id, force) {
         const base = (await git(['merge-base', 'HEAD', 'origin/development']))?.trim()
         const behind = base ? Number((await git(['rev-list', '--count', 'HEAD..origin/development']))?.trim()) : NaN
         if (!base || !Number.isFinite(behind)) setLight('drift', driftLight(undefined), now)
-        else {
+        else if (lights.git?.branch === 'development') {
+          // On development itself "behind origin/development" is exactly what the Git light already shows
+          setLight('drift', { color: COLORS.green, value: 'on dev', short: 'You are on development itself, so the Git light already shows how far behind you are', detail: [] }, now)
+        } else {
           const theirs = new Set(lines(await git(['diff', '--name-only', base, 'origin/development'])))
           const mine = lines(await git(['diff', '--name-only', base]))
           setLight('drift', driftLight({ branch: lights.git?.branch ?? 'HEAD', behind, overlap: mine.filter((f) => theirs.has(f)) }), now)
@@ -443,6 +446,43 @@ async function reviewChanges($) {
     $.ui.toast('Reset failed: ' + shorten(err?.message ?? err, 140))
   } finally {
     resettingGit = false
+    await poll($, 'git', true)
+  }
+  return true
+}
+
+// Clicking Git or Drift while behind offers to catch up: Git pulls the branch's own upstream, Drift merges origin/development
+// into a feature branch (on development itself both lights mean the same pull). Returns true when it asked, false to fall through.
+let syncingGit = false
+async function syncBehind($, id) {
+  if (syncingGit || !repoRoot) return false
+  const git = (...args) => $.process.run(['git', '-C', repoRoot, ...args], { timeoutMs: 120_000 })
+  const branch = lights.git?.branch
+  const merge = id === 'drift' && branch && branch !== 'development'
+  const target = merge ? 'origin/development' : '@{u}'
+  const n = Number(String((await git('rev-list', '--count', 'HEAD..' + target)).stdout ?? '').trim())
+  if (!Number.isFinite(n) || n === 0) return false
+  const doIt = merge ? 'Merge origin/development into ' + branch : 'Pull (git pull --ff-only)'
+  let answer = ''
+  try {
+    answer = await $.ui.ask(branch + ' is ' + n + ' commit(s) behind ' + (merge ? 'origin/development' : 'its upstream') + '.' + (lights[id]?.value?.includes('clash') ? ' Some files you changed also changed there, so expect conflicts.' : '') + ' Catch up now?', { header: 'Dragon', options: [doIt, 'Not now'] })
+  } catch {
+    return true
+  }
+  if (answer !== doIt) return true
+  syncingGit = true
+  try {
+    if (merge) await git('fetch', 'origin', 'development')
+    const r = merge ? await git('merge', '--no-edit', 'origin/development') : await git('pull', '--ff-only')
+    if (r.exitCode === 0) $.ui.toast('Caught up: ' + n + ' commit(s) brought in.')
+    else {
+      if (merge) await git('merge', '--abort')
+      $.ui.toast((merge ? 'The merge had conflicts and was undone, nothing changed. ' : 'Pull failed: ') + shorten(r.stderr || r.stdout || 'unknown error', 120))
+    }
+  } catch (err) {
+    $.ui.toast('Sync failed: ' + shorten(err?.message ?? err, 140))
+  } finally {
+    syncingGit = false
     await poll($, 'git', true)
   }
   return true
@@ -1101,6 +1141,7 @@ export function register(on, options) {
             const color = l?.color ?? COLORS.grey
             const open = async () => {
               if (s.id === 'git' && (await reviewChanges($))) return
+              if ((s.id === 'git' || s.id === 'drift') && (await syncBehind($, s.id))) return
               // An "unclear" test light has nothing worth opening: a click runs it again
               const kind = s.id === 'tests' ? 'be' : s.id === 'fe-tests' ? 'fe' : undefined
               if (kind && l?.value === 'unclear') return runTestKind($, kind, true)
