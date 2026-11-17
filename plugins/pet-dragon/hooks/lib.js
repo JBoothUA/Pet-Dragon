@@ -785,34 +785,25 @@ export function standupSince(now) {
 }
 
 // since: a Date; issues from the Jira query, prs from `twg prs query`, commits as `sha subject` lines.
-// Compact on purpose: a table per source, empty sources collapse to one line, commits show a count and the newest few.
+// Very concise on purpose: one table, one row per item (kind, id, state, title), one row for all commits.
 export function formatStandup({ since, issues, prs, commits, repoId }) {
-  const day = since.toISOString().slice(0, 10)
-  const lines = ['Standup since ' + day]
+  const lines = ['Standup since ' + ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][since.getUTCDay()] + ' ' + since.toISOString().slice(5, 10)]
   const pad = (v, n) => String(v).padEnd(n)
   const jira = Array.isArray(issues) ? issues : undefined
-  if (!jira) lines.push('Jira: could not read (is twg logged in?)')
-  else if (jira.length === 0) lines.push('Jira: nothing updated')
+  if (!jira) lines.push('Jira  unreadable (twg logged in?)')
+  else if (jira.length === 0) lines.push('Jira  none')
   else {
-    lines.push('Jira (' + jira.length + ')')
-    const w = Math.max(...jira.map((i) => String(i.status?.name ?? '?').length))
-    const kw = Math.max(...jira.map((i) => String(i.key).length)) + 2
-    for (const i of jira) lines.push('  ' + pad(i.key, kw) + pad(i.status?.name ?? '?', w + 2) + shorten(i.summary, 60))
+    const kw = Math.max(...jira.map((i) => String(i.key).length)) + 1
+    const sw = Math.max(...jira.map((i) => String(i.status?.name ?? '?').length)) + 1
+    for (const i of jira) lines.push('Jira  ' + pad(i.key, kw) + pad(i.status?.name ?? '?', sw) + shorten(i.summary, 45))
   }
   const all = Array.isArray(prs) ? (repoId ? prs.filter((p) => p.repo?.id === repoId) : prs) : undefined
-  if (!all) lines.push('PRs: could not read (is twg logged in?)')
-  else if (all.length === 0) lines.push('PRs: nothing updated')
-  else {
-    lines.push('PRs (' + all.length + ')')
-    for (const p of all) lines.push('  ' + pad(String(p.state ?? '?').toLowerCase(), 9) + shorten(p.title, 60) + (p.commentCount ? '  (' + p.commentCount + ' comments)' : ''))
-  }
-  if (!commits) lines.push('Commits: could not read git log')
-  else if (commits.length === 0) lines.push('Commits: none')
-  else {
-    lines.push('Commits (' + commits.length + ')')
-    for (const c of commits.slice(0, 3)) lines.push('  ' + shorten(c, 70))
-    if (commits.length > 3) lines.push('  …and ' + (commits.length - 3) + ' more')
-  }
+  if (!all) lines.push('PR    unreadable (twg logged in?)')
+  else if (all.length === 0) lines.push('PR    none')
+  else for (const p of all) lines.push('PR    ' + pad(String(p.state ?? '?').toLowerCase(), 7) + shorten(p.title, 45) + (p.commentCount ? ' (' + p.commentCount + 'c)' : ''))
+  if (!commits) lines.push('Git   unreadable')
+  else if (commits.length === 0) lines.push('Git   no commits')
+  else lines.push('Git   ' + commits.length + ' commit' + (commits.length === 1 ? '' : 's') + ', last: ' + shorten(commits[0].replace(/^\S+\s+/, ''), 45))
   return lines.join('\n')
 }
 

@@ -259,10 +259,10 @@ test('/dragon standup gathers Jira, PRs and commits', async ($, on) => {
 
   const out = await $.command.run({ command: 'dragon', args: 'standup' })
   expect(out.text).toContain('Standup since')
-  expect(out.text).toContain('C3-1  In Progress  Do a thing')
+  expect(out.text).toContain('Jira  C3-1 In Progress Do a thing')
   expect(out.text).toContain('Fix it')
   expect(out.text).not.toContain('Other repo')
-  expect(out.text).toContain('abc1234 C3-1 Fix the thing')
+  expect(out.text).toContain('last: C3-1 Fix the thing')
 })
 
 test('pressing the band Standup button prints the standup into the chat', async ($, on) => {
@@ -276,7 +276,7 @@ test('pressing the band Standup button prints the standup into the chat', async 
   await clock.advance(100)
   const printed = logged.join(' | ')
   expect(printed).toContain('Standup since')
-  expect(printed).toContain('C3-1  In Progress  Do a thing')
+  expect(printed).toContain('Jira  C3-1 In Progress Do a thing')
   await ui.unmount()
 })
 
@@ -432,10 +432,9 @@ test('standup picks the previous working day and formats every section', () => {
     commits: ['abc Fix'],
     repoId: 'r',
   })
-  expect(text).toContain('C3-1  Done  Do a thing')
-  expect(text).toContain('merged   Fix it  (3 comments)')
+  expect(text.split('\n')).toEqual(['Standup since Fri 11-13', 'Jira  C3-1 Done Do a thing', 'PR    merged Fix it (3c)', 'Git   1 commit, last: Fix'])
   expect(text).not.toContain('Elsewhere')
-  expect(formatStandup({ since: new Date(), issues: undefined, prs: undefined, commits: undefined })).toContain('Jira: could not read')
+  expect(formatStandup({ since: new Date(), issues: undefined, prs: undefined, commits: undefined })).toContain('Jira  unreadable')
 })
 
 test('release radar names prod, next and development', () => {
