@@ -17,6 +17,8 @@ import {
   prLight,
   outlookLight,
   teamsLight,
+  meetLight,
+  shouldRemindMeeting,
   parseGitStatus,
   gitLight,
   pipelineLight,
@@ -26,7 +28,6 @@ import {
   ctxLight,
   dayStats,
   dayLight,
-  limitLight,
   sessLight,
   tokenAdvice,
   reviewLight,
@@ -73,6 +74,7 @@ const DEFAULTS = {
   ui_port: 5173,
   radar_poll_minutes: 10,
   db_scripts_dir: '',
+  auto_test_command: '',
   token_coach: 'advise',
   auto_compact_percent: 90,
   skill_suggestions: 'ask',
@@ -93,6 +95,7 @@ const SOURCES = [
   { id: 'bitbucket', label: 'PRs', title: 'PRs', row: 1 },
   { id: 'reviews', label: 'Review', title: 'PRs to review', row: 1, parent: 'bitbucket' },
   { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1 },
+  { id: 'meet', label: 'Mtgs', title: 'Meetings today', row: 1, parent: 'outlook' },
   { id: 'teams', label: 'Teams', title: 'Teams', row: 1, parent: 'outlook' },
   { id: 'git', label: 'Git', title: 'Git', row: 2 },
   { id: 'pipeline', label: 'CI', title: 'Pipelines', row: 2 },
@@ -100,18 +103,15 @@ const SOURCES = [
   { id: 'seq', label: 'Logs', title: 'Seq errors', row: 2 },
   { id: 'radar', label: 'Prod', title: 'Release radar', row: 3 },
   { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, parent: 'radar' },
-  { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
   { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, parent: 'radar' },
+  { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
   { id: 'sess', label: 'Sess', title: 'This session', row: 4 },
-  { id: 'limit', label: 'Limit', title: 'Usage limits', row: 4 },
 ]
-// Usage-limit windows only exist for subscription accounts (Pro/Max); on Enterprise or API billing there is nothing to show
-const noLimitData = (s) => s.id === 'limit' && (!lights.limit || lights.limit.value === 'n/a')
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day', 'sess', 'limit'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'radar', 'ctx', 'day', 'sess'])
 const ERROR_LIMIT = 50
 
 let opts = { ...DEFAULTS }
@@ -229,6 +229,7 @@ async function poll($, id, force) {
     } else if (key === 'outlook') {
       const m = isWindows ? await runPowerShell($, 'messages-probe.ps1', []) : { outlook: 'off', teams: 'off' }
       setLight('outlook', outlookLight(m), now)
+      setLight('meet', meetLight(m, now), now)
       setLight('teams', teamsLight(m), now)
     } else if (key === 'jira') {
       const r = await $.process.run(
@@ -403,6 +404,51 @@ const announced = new Set()
 let startBranch = ''
 let compacting = false
 
+// Tests never sit at "not run": when nothing is recorded for this repo, run its unit tests once and record the result
+let autoTesting = false
+async function autoRunTests($) {
+  if (autoTesting || !repoRoot || lights.tests?.value !== 'not run') return
+  autoTesting = true
+  try {
+    let argv = String(opts.auto_test_command ?? '').split(' ').filter(Boolean)
+    if (!argv.length) {
+      const r = await $.process.run(['git', '-C', repoRoot, 'ls-files', 'bff/Tests/*UnitTests*.csproj'], { timeoutMs: 15_000 })
+      const proj = String(r.stdout ?? '').split('\n').map((x) => x.trim()).find(Boolean)
+      if (proj) argv = ['dotnet', 'test', proj, '--nologo']
+    }
+    if (!argv.length) return
+    const command = argv.join(' ')
+    setLight('tests', { color: COLORS.working, value: 'running', short: 'No test run was recorded for this repo, so Dragon is running: ' + shorten(command, 90), detail: [] }, await $.clock.now())
+    $.ui.invalidate('ui.render')
+    const r = await $.process.run(argv, { cwd: repoRoot, timeoutMs: 600_000 })
+    const run = parseTestRun(command, [r.stdout, r.stderr].filter(Boolean).join('\n'))
+    const at = await $.clock.now()
+    if (run) {
+      setLight('tests', testLight(run, command, at, at), at)
+      await $.store.set('last-test:' + repoRoot, { run, command, at })
+    } else {
+      setLight('tests', { color: COLORS.amber, value: 'unclear', short: 'Ran ' + shorten(command, 90) + ' but found no pass/fail summary in its output', detail: [] }, at)
+    }
+  } catch (err) {
+    setLight('tests', { color: COLORS.amber, value: 'unclear', short: 'The automatic test run failed: ' + shorten(err?.message ?? err, 100), detail: [] }, await $.clock.now())
+  } finally {
+    autoTesting = false
+  }
+}
+
+// Late afternoon: remind about tomorrow's first meeting, once a day
+async function checkMeetReminder($) {
+  try {
+    const now = await $.clock.now()
+    const reminded = await $.store.get('meet-reminded')
+    if (!shouldRemindMeeting(now, Date.now() - lastActivity, reminded)) return
+    const first = lights.meet?.tomorrowFirst
+    if (!first) return
+    await $.store.set('meet-reminded', localDay(new Date(now)))
+    $.ui.toast('Dragon: Your first meeting tomorrow is at ' + first + '.')
+  } catch {}
+}
+
 // Context, spend and limits: refresh the three Use lights, announce new advice, and compact when asked to
 async function refreshContext($, { turnEnded } = {}) {
   let u
@@ -442,7 +488,6 @@ async function refreshContext($, { turnEnded } = {}) {
     setLight('ctx', ctxLight(session.contextPct), now)
     setLight('day', dayLight(day), now)
     setLight('sess', sessLight(u?.cost?.usd, u?.startedAt, now), now)
-    setLight('limit', limitLight(u?.rateLimits, now), now)
 
     if (!startBranch && lights.git?.branch) startBranch = lights.git.branch
     const advice = tokenAdvice({
@@ -660,6 +705,7 @@ export function register(on, options) {
     await loadSkills($)
     await refreshContext($)
     // Stagger the first checks so startup isn't one burst of processes
+    $.clock.after(4_000, () => autoRunTests($))
     $.clock.after(500, () => poll($, 'git'))
     $.clock.after(1_000, () => poll($, 'coreapi'))
     $.clock.after(2_000, () => poll($, 'seq'))
@@ -671,6 +717,7 @@ export function register(on, options) {
     for (const id of ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket']) $.clock.every(intervalMs(id), () => poll($, id))
     $.clock.every(10 * 60_000, () => loadSkills($))
     $.clock.every(60_000, () => checkSleepy($))
+    $.clock.every(60_000, () => checkMeetReminder($))
     $.clock.every(60_000, () => refreshContext($))
     return result
   })
@@ -868,7 +915,7 @@ export function register(on, options) {
         columnGap: 2,
         children: [
           Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
-          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off') && !noLimitData(s)).map((s) => {
+          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off')).map((s) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
             const open = () => {
@@ -990,7 +1037,7 @@ export function register(on, options) {
     )
     rows.push(Text({ children: [' '] }))
 
-    for (const s of SOURCES.filter((x) => !noLimitData(x))) {
+    for (const s of SOURCES) {
       const l = lights[s.id]
       rows.push(
         Text({

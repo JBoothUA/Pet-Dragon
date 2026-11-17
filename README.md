@@ -50,8 +50,8 @@ Tested with Claude Code 2.1.312. Mods are new and their API can change between r
 | Merged | PRs merged into `development` since local midnight, and by whom (hover for author, ticket and PR number) | git |
 | Review | Open PRs waiting on **your** review; red when any is older than 3 days | `twg prs query --role reviewer` |
 | Ctx | How full the context window is. Green under 60%, amber to 85%, red above. The hover says when to `/compact` or `/clear` | `$.session.usage()` |
-| Today | What you've spent today across sessions, against your typical day (average of up to 14 earlier days with spend). Amber at 1.25x, red at 1.75x, once you pass $5 | `$.session.usage()` cost, kept in the plugin store |
-| Limit | The fullest of your 5-hour and 7-day usage windows, with when it resets | `$.session.usage()` rate limits |
+| Today | What you have spent today across sessions against a fixed $15 daily limit, e.g. `$8.60/$15.00`. Green, amber from 70% of the limit, red at or over it. The hover also compares it with a typical day | `$.session.usage()` cost, kept in the plugin store |
+| Mtgs | Meetings still to come today (the one in progress counts, finished ones do not). Hover for the list with times and rooms, and when tomorrow's first meeting starts. Around 3:30pm, once you are idle (or from 4:00pm regardless), Dragon reminds you once: "Your first meeting tomorrow is at 8:00am." | Classic Outlook calendar (needs Outlook running) |
 
 Light colors:
 

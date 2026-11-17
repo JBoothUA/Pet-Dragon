@@ -26,6 +26,7 @@
     "token_coach": { "type": "string", "title": "Token coach", "description": "advise = Dragon tells you when to /compact or /clear and when spend or limits run high; auto = it also compacts for you between turns once context passes auto_compact_percent", "default": "advise" },
     "auto_compact_percent": { "type": "number", "title": "Auto-compact at (%)", "description": "In token_coach auto mode, compact between turns once the context window is this full", "default": 90, "min": 60, "max": 98 },
     "db_scripts_dir": { "type": "string", "title": "DB switch scripts folder", "description": "Folder holding use-local-db.ps1 and use-docker-db.ps1, which the Core light runs to switch CoreAPI between your local and Docker SQL Server. Empty = your Desktop", "default": "" },
+    "auto_test_command": { "type": "string", "title": "Test command when none is recorded", "description": "Run once when Dragon has no recorded test run for the repo, so the Tests light is never empty. Empty = the first bff/Tests/*UnitTests* project via dotnet test", "default": "" },
     "skill_suggestions": { "type": "string", "title": "Skill suggestions", "description": "ask = offer related skills before a prompt is sent; off = never", "default": "ask", "options": ["ask", "off"] },
     "skill_min_score": { "type": "number", "title": "Skill suggestion sensitivity", "description": "Lower suggests more often. A skill-name word match scores 3, a description word 1.", "default": 2, "min": 1, "max": 10 }
   }

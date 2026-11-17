@@ -174,7 +174,6 @@ export function ago(ms, now) {
 // A detail entry is a string, or { text, url } when the line has somewhere to go (the pane makes it a link).
 // A light may also carry `url`: where pressing the light goes instead of its default.
 export const link = (text, url) => (url ? { text, url } : text)
-export const detailText = (d) => (typeof d === 'string' ? d : d.text)
 
 export function coreApiLight(p, port) {
   if (!p) return { color: COLORS.grey, value: '?', short: 'CoreAPI probe failed to run', detail: [] }
@@ -245,6 +244,48 @@ export function outlookLight(m) {
   if (m.outlook === 'error') return { color: COLORS.amber, value: '?', short: 'Outlook is running but could not be read', detail: [m.outlookError ?? ''] }
   const n = m.outlookUnread ?? 0
   return { color: n ? COLORS.unread : COLORS.green, value: String(n), short: n ? n + ' unread email(s) in your Inbox' : 'Inbox is all read', detail: [] }
+}
+
+// "2026-11-17T08:00" -> "8:00am"
+const clock12 = (iso) => {
+  const h = Number(String(iso).slice(11, 13))
+  return (h % 12 || 12) + ':' + String(iso).slice(14, 16) + (h < 12 ? 'am' : 'pm')
+}
+
+// Today's meetings still to come (plus the one in progress) and tomorrow's first one, from the Outlook calendar.
+// m.meetings: [{ start, end, subject, location, allDay }] with local "YYYY-MM-DDTHH:mm" times
+export function meetLight(m, nowMs) {
+  if (!m) return { color: COLORS.grey, value: '?', short: 'Calendar probe failed to run', detail: [] }
+  if (m.outlook === 'new-outlook') return { color: COLORS.grey, value: 'n/a', short: 'New Outlook has no local API; switch to classic Outlook to see meetings', detail: [] }
+  if (m.outlook !== 'on') return { color: COLORS.grey, value: 'off', short: 'Classic Outlook is not running, so meetings are unknown', detail: [] }
+  if (!Array.isArray(m.meetings)) return { color: COLORS.amber, value: '?', short: 'Outlook is running but its calendar could not be read', detail: [m.meetingsError ?? ''].filter(Boolean) }
+  const day = localDay(new Date(nowMs))
+  const tomorrow = localDay(new Date(nowMs + 86_400_000))
+  const timed = m.meetings.filter((x) => x && !x.allDay && x.start && x.end).sort((a, b) => String(a.start).localeCompare(String(b.start)))
+  const left = timed.filter((x) => String(x.start).slice(0, 10) === day && Date.parse(x.end) > nowMs)
+  const tom = timed.filter((x) => String(x.start).slice(0, 10) === tomorrow)
+  const line = (x) => clock12(x.start) + '-' + clock12(x.end) + '  ' + x.subject + (x.location ? ' (' + x.location + ')' : '') + (Date.parse(x.start) <= nowMs ? '  [now]' : '')
+  const soon = left.some((x) => Date.parse(x.start) - nowMs <= 15 * 60_000)
+  const first = tom[0]
+  const detail = [
+    left.length ? 'Still to come today:' : 'No more meetings today',
+    ...left.map((x) => '  ' + line(x)),
+    first ? 'Tomorrow: ' + tom.length + ' meeting(s), first at ' + clock12(first.start) + '  ' + first.subject : 'Tomorrow: no meetings',
+  ]
+  const next = left[0]
+  const short = left.length
+    ? left.length + ' meeting(s) left today; ' + (Date.parse(next.start) <= nowMs ? 'one is on now' : 'next at ' + clock12(next.start)) + (first ? '. Tomorrow starts at ' + clock12(first.start) : '')
+    : 'No more meetings today' + (first ? '. Tomorrow starts at ' + clock12(first.start) : '')
+  return { color: soon ? COLORS.amber : left.length ? COLORS.teal : COLORS.green, value: String(left.length), short, detail, tomorrowFirst: first ? clock12(first.start) : undefined }
+}
+
+// The end-of-day nudge about tomorrow's first meeting: from 3:30pm once you have been idle a couple of minutes,
+// or from 4:00pm regardless, once a day
+export function shouldRemindMeeting(nowMs, idleMs, remindedDay) {
+  const d = new Date(nowMs)
+  const mins = d.getHours() * 60 + d.getMinutes()
+  if (remindedDay === localDay(d) || mins < 15 * 60 + 30 || mins >= 20 * 60) return false
+  return idleMs >= 120_000 || mins >= 16 * 60
 }
 
 export function teamsLight(m) {
@@ -382,13 +423,6 @@ export function seqLight(events, windowMinutes, limit, seqUrl) {
 
 const usageColor = (pct) => (pct >= 85 ? COLORS.red : pct >= 60 ? COLORS.amber : COLORS.green)
 
-function untilReset(iso, nowMs) {
-  const t = Date.parse(iso ?? '')
-  if (!Number.isFinite(t)) return ''
-  const m = Math.max(0, Math.round((t - nowMs) / 60_000))
-  return m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + 'm'
-}
-
 export function ctxLight(pct) {
   if (typeof pct !== 'number') return { color: COLORS.grey, value: '?', short: 'Context size is not known yet (it appears after the first reply)', detail: [] }
   const v = Math.round(pct) + '%'
@@ -414,29 +448,25 @@ export function dayStats(days, todayKey) {
   return { today, avg, n: prev.length }
 }
 
-export function dayLight(st) {
+// The daily budget the Today light measures against
+export const DAILY_LIMIT_USD = 15
+
+export function dayLight(st, limit = DAILY_LIMIT_USD) {
   if (!st) return { color: COLORS.grey, value: '?', short: 'Spend for today is not known yet', detail: [] }
   const usd = '$' + st.today.toFixed(2)
-  const shown = st.today < 10 ? usd : '$' + Math.round(st.today)
-  if (st.avg === undefined) return { color: COLORS.teal, value: shown, short: 'Spent ' + usd + ' today. No comparison with a typical day yet: that needs 3 earlier days of history', detail: ['Counts every session Dragon has watched today.'] }
-  const ratio = st.avg > 0 ? st.today / st.avg : 0
-  const color = ratio >= 1.75 && st.today >= 5 ? COLORS.red : ratio >= 1.25 && st.today >= 5 ? COLORS.amber : COLORS.green
+  const cap = '$' + limit.toFixed(2)
+  const frac = limit > 0 ? st.today / limit : 0
+  const color = frac >= 1 ? COLORS.red : frac >= 0.7 ? COLORS.amber : COLORS.green
+  const typical = st.avg === undefined ? 'No typical day yet (needs 3 earlier days of history)' : 'A typical day is $' + st.avg.toFixed(2) + ' (' + (st.avg > 0 ? (st.today / st.avg).toFixed(1) : '0.0') + 'x)'
+  const left = frac >= 1 ? '$' + (st.today - limit).toFixed(2) + ' over the daily limit' : '$' + (limit - st.today).toFixed(2) + ' left of the daily limit'
   return {
     color,
-    value: shown,
-    short: 'Spent ' + usd + ' today; a typical day is $' + st.avg.toFixed(2) + ' (' + ratio.toFixed(1) + 'x)',
-    detail: ['Typical day = average of your last ' + st.n + ' days with spend. Counts what Dragon saw while it was running.'],
-    ratio,
+    value: usd + '/' + cap,
+    short: 'Spent ' + usd + ' of ' + cap + ' today (' + Math.round(frac * 100) + '%); ' + left + '. ' + typical,
+    detail: ['Daily limit is fixed at ' + cap + '. Counts every session Dragon has watched today.'],
+    ratio: st.avg > 0 ? st.today / st.avg : 0,
+    frac,
   }
-}
-
-export function limitLight(limits, nowMs) {
-  if (!Array.isArray(limits) || limits.length === 0) return { color: COLORS.grey, value: 'n/a', short: 'No rate-limit reading yet (appears after a reply, on a subscription)', detail: [] }
-  const name = (k) => (k === 'five_hour' ? '5-hour window' : k === 'seven_day' ? '7-day window' : k === 'spend_limit' ? 'spend limit' : k)
-  const top = Math.max(...limits.map((l) => l.percentUsed))
-  const detail = limits.map((l) => name(l.kind) + ': ' + l.percentUsed + '% used' + (l.resetsAt ? ', resets in ' + untilReset(l.resetsAt, nowMs) : ''))
-  const worst = limits.find((l) => l.percentUsed === top)
-  return { color: usageColor(top), value: Math.round(top) + '%', short: name(worst.kind) + ' is ' + worst.percentUsed + '% used' + (worst.resetsAt ? ' (resets in ' + untilReset(worst.resetsAt, nowMs) + ')' : ''), detail, top }
 }
 
 // This session's own cost and burn rate

@@ -11,12 +11,13 @@ import {
   prLight,
   seqLight,
   radarLight,
+  meetLight,
+  shouldRemindMeeting,
   coreApiLight,
   releaseForecast,
   ctxLight,
   dayStats,
   dayLight,
-  limitLight,
   sessLight,
   tokenAdvice,
   reviewLight,
@@ -471,15 +472,14 @@ test('token coach lights and advice', () => {
   const st = dayStats(days, '2026-11-16')
   expect(st).toEqual({ today: 30, avg: 10, n: 3 })
   expect(dayLight(st).color).toBe('#ff5252')
+  expect(dayLight(st).value).toBe('$30.00/$15.00')
   const early = dayLight(dayStats({ '2026-11-16': 3.4 }, '2026-11-16'))
-  expect(early.value).toBe('$3.40')
-  expect(early.short).toContain('Spent $3.40 today')
-  expect(early.short).toContain('No comparison')
-  const now = Date.parse('2026-11-16T12:00:00Z')
-  const lim = limitLight([{ kind: 'five_hour', percentUsed: 82, resetsAt: '2026-11-16T13:20:00Z' }, { kind: 'seven_day', percentUsed: 40 }], now)
-  expect(lim.value).toBe('82%')
-  expect(lim.short).toBe('5-hour window is 82% used (resets in 1h 20m)')
-  expect(limitLight([], now).value).toBe('n/a')
+  expect(early.value).toBe('$3.40/$15.00')
+  expect(early.color).toBe('#3ddc84')
+  expect(dayLight(dayStats({ '2026-11-16': 8.6 }, '2026-11-16')).value).toBe('$8.60/$15.00')
+  expect(dayLight(dayStats({ '2026-11-16': 11 }, '2026-11-16')).color).toBe('#ffc107')
+  expect(early.short).toContain('Spent $3.40 of $15.00 today')
+  expect(early.short).toContain('No typical day yet')
   const ids = (s: object) => tokenAdvice(s as never).map((a) => a.id)
   expect(ids({ contextPct: 50 })).toEqual([])
   expect(ids({ contextPct: 70 })).toEqual(['compact-soon'])
@@ -542,4 +542,34 @@ test('Tests light remembers the last run and shows how old it is', () => {
   expect(old.short).toContain('over a day old')
   expect(testLight({ ...run, failed: 2 }, 'dotnet test', now, now).color).toBe('#ff5252')
   expect(testLight(undefined).short).toContain('remembers the last one between sessions')
+})
+
+test('meetings light counts what is still to come and names tomorrow\'s first meeting', () => {
+  const now = new Date(2026, 10, 16, 13, 20).getTime()
+  const m = {
+    outlook: 'on',
+    meetings: [
+      { start: '2026-11-16T09:00', end: '2026-11-16T09:30', subject: 'Standup', location: '', allDay: false },
+      { start: '2026-11-16T13:30', end: '2026-11-16T14:00', subject: 'Design review', location: 'Teams', allDay: false },
+      { start: '2026-11-16T15:00', end: '2026-11-16T16:00', subject: 'Planning', location: '', allDay: false },
+      { start: '2026-11-17T08:00', end: '2026-11-17T08:30', subject: 'Early sync', location: '', allDay: false },
+      { start: '2026-11-17T10:00', end: '2026-11-17T11:00', subject: 'Later', location: '', allDay: false },
+      { start: '2026-11-16T00:00', end: '2026-11-17T00:00', subject: 'Birthday', location: '', allDay: true },
+    ],
+  }
+  const l = meetLight(m, now)
+  expect(l.value).toBe('2')
+  expect(l.detail.join('|')).not.toContain('Standup')
+  expect(l.detail.join('|')).toContain('1:30pm-2:00pm  Design review (Teams)')
+  expect(l.detail.join('|')).toContain('first at 8:00am  Early sync')
+  expect(l.tomorrowFirst).toBe('8:00am')
+  expect(l.color).toBe('#ffc107')
+  expect(meetLight({ outlook: 'off' }, now).value).toBe('off')
+  expect(meetLight({ outlook: 'on', meetings: [] }, now).short).toBe('No more meetings today')
+  const at = (h: number, mi: number) => new Date(2026, 10, 16, h, mi).getTime()
+  expect(shouldRemindMeeting(at(15, 0), 999999, undefined)).toBe(false)
+  expect(shouldRemindMeeting(at(15, 40), 300_000, undefined)).toBe(true)
+  expect(shouldRemindMeeting(at(15, 40), 10_000, undefined)).toBe(false)
+  expect(shouldRemindMeeting(at(16, 5), 10_000, undefined)).toBe(true)
+  expect(shouldRemindMeeting(at(16, 5), 10_000, '2026-11-16')).toBe(false)
 })
