@@ -582,6 +582,12 @@ const partTotals = {}
 const testBusy = {}
 async function autoRunTests($) {
   if (!repoRoot) return
+  // The front end waits for the backend run, so it says so instead of sitting at "not run"
+  const fe = TEST_KINDS.fe.light
+  if (lights[fe]?.value === 'not run') {
+    setLight(fe, { color: COLORS.working, value: 'queued', short: 'Front-end tests start as soon as the backend run finishes (the two do not run together, to keep the machine responsive)', detail: [] }, await $.clock.now())
+    $.ui.invalidate('ui.render')
+  }
   for (const kind of ['be', 'fe']) await runTestKind($, kind, false)
 }
 
@@ -590,11 +596,15 @@ async function autoRunTests($) {
 async function runTestKind($, kind, force) {
   const light = TEST_KINDS[kind].light
   const value = lights[light]?.value
-  if (testBusy[kind] || !(value === 'not run' || (force && value === 'unclear'))) return
+  if (testBusy[kind] || !(value === 'not run' || value === 'queued' || (force && value === 'unclear'))) return
   testBusy[kind] = true
   try {
     const plan = await autoTestPlan($, kind)
-    if (!plan) return
+    if (!plan) {
+      // Nothing to run in this repo: put the light back to "not run" rather than leave it queued
+      if (value === 'queued') setLight(light, testLight(undefined, undefined, undefined, undefined, kind), await $.clock.now())
+      return
+    }
     const count = plan.parts.length
     for (const attempt of [1, 2]) {
       let unclear
