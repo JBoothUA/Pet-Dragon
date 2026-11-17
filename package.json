@@ -4,6 +4,9 @@
   "type": "module",
   "scripts": {
     "preview": "node tools/mascot-preview.mjs",
-    "preview:animate": "node tools/mascot-preview.mjs --animate"
+    "preview:animate": "node tools/mascot-preview.mjs --animate",
+    "check": "node tools/check.mjs",
+    "check:fast": "node tools/check.mjs --fast",
+    "setup": "git config core.hooksPath .githooks"
   }
 }

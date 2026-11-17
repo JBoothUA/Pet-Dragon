@@ -525,38 +525,53 @@ async function autoTestPlan($, kind) {
     return proj ? { argv: ['dotnet', 'test', proj, '--nologo'], cwd: repoRoot, shown: 'dotnet test ' + proj + ' --nologo' } : undefined
   }
   if (!(await find('phoenix-ui/package.json'))) return undefined
-  const npm = ['npm', 'run', 'test', '--', '--silent']
+  // The whole Jest suite is 1,200+ files and runs for 40+ minutes, so the automatic run covers only the tests related to
+  // what this branch changed against origin/development; a run of Claude's own (npm test) replaces it with the real thing
+  const npm = ['npm', 'run', 'test', '--', '--silent', '--changedSince=origin/development', '--passWithNoTests']
   return { argv: shellWrap(npm), cwd: repoRoot + '/phoenix-ui', shown: npm.join(' ') }
 }
 
-// Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it once and record the result.
+// Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it and record the result.
 // Backend first, then front end, so the two suites do not compete for the CPU.
-let autoTesting = false
+const testBusy = {}
 async function autoRunTests($) {
-  if (autoTesting || !repoRoot) return
-  autoTesting = true
-  try {
-    for (const kind of ['be', 'fe']) await autoRunKind($, kind)
-  } finally {
-    autoTesting = false
-  }
+  if (!repoRoot) return
+  for (const kind of ['be', 'fe']) await runTestKind($, kind, false)
 }
 
-async function autoRunKind($, kind) {
+// force: re-run even though the light says "unclear" (a click on it), not only when nothing is recorded.
+// A run that ends without a pass/fail summary is tried once more before the light gives up on it.
+async function runTestKind($, kind, force) {
   const light = TEST_KINDS[kind].light
-  if (lights[light]?.value !== 'not run') return
+  const value = lights[light]?.value
+  if (testBusy[kind] || !(value === 'not run' || (force && value === 'unclear'))) return
+  testBusy[kind] = true
   try {
     const plan = await autoTestPlan($, kind)
     if (!plan) return
-    setLight(light, { color: COLORS.working, value: 'running', short: 'No test run was recorded for this repo, so Dragon is running: ' + shorten(plan.shown, 90), detail: [] }, await $.clock.now())
-    $.ui.invalidate('ui.render')
-    const r = await $.process.run(plan.argv, { cwd: plan.cwd, timeoutMs: 900_000 })
-    const run = parseTestRun(plan.shown, [r.stdout, r.stderr].filter(Boolean).join('\n'))
-    const at = await $.clock.now()
-    if (run && testKind(run) === kind) await recordTestRun($, run, plan.shown, at)
-    else setLight(light, { color: COLORS.amber, value: 'unclear', short: 'Ran ' + shorten(plan.shown, 90) + ' but found no pass/fail summary in its output', detail: [] }, at)
-  } catch (err) {
-    setLight(light, { color: COLORS.amber, value: 'unclear', short: 'The automatic test run failed: ' + shorten(err?.message ?? err, 100), detail: [] }, await $.clock.now())
+    for (const attempt of [1, 2]) {
+      setLight(light, { color: COLORS.working, value: 'running', short: (attempt === 2 ? 'The first run gave no result, so Dragon is running it again: ' : 'No test run was recorded for this repo, so Dragon is running: ') + shorten(plan.shown, 90), detail: [] }, await $.clock.now())
+      $.ui.invalidate('ui.render')
+      let unclear
+      let tail = []
+      try {
+        const r = await $.process.run(plan.argv, { cwd: plan.cwd, timeoutMs: 900_000 })
+        const output = [r.stdout, r.stderr].filter(Boolean).join('\n')
+        const run = parseTestRun(plan.shown, output)
+        if (run && testKind(run) === kind) {
+          await recordTestRun($, run, plan.shown, await $.clock.now())
+          return
+        }
+        // What the run actually said, so an unclear light explains itself on hover
+        tail = output.split('\n').map((l) => l.trim()).filter(Boolean).slice(-4).map((l) => shorten(l, 110))
+        unclear = 'Ran ' + shorten(plan.shown, 90) + ' (exit ' + r.exitCode + ') but found no pass/fail summary in its output'
+      } catch (err) {
+        unclear = 'The automatic test run failed: ' + shorten(err?.message ?? err, 100)
+      }
+      setLight(light, { color: COLORS.amber, value: 'unclear', short: unclear + '. Click this light to run it again', detail: tail.length ? ['Last output:', ...tail] : [] }, await $.clock.now())
+    }
+  } finally {
+    testBusy[kind] = false
   }
 }
 
@@ -1063,6 +1078,9 @@ export function register(on, options) {
             const color = l?.color ?? COLORS.grey
             const open = async () => {
               if (s.id === 'git' && (await reviewChanges($))) return
+              // An "unclear" test light has nothing worth opening: a click runs it again
+              const kind = s.id === 'tests' ? 'be' : s.id === 'fe-tests' ? 'fe' : undefined
+              if (kind && l?.value === 'unclear') return runTestKind($, kind, true)
               const url = lightUrl(s.id)
               if (url) openUrl($, url)
               else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })

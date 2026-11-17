@@ -396,6 +396,8 @@ export function parseTestRun(command, output) {
     const f = /(\d+)\s+failed/i.exec(text)
     return { runner: 'playwright', passed: Number(m[1]), failed: Number(f?.[1] ?? 0) }
   }
+  // jest --changedSince/--passWithNoTests with nothing related to the change: a clean run of zero tests, not a missing summary
+  if (/No tests found/i.test(text) && /jest|npm\s+(run\s+)?test/i.test(cmd)) return { runner: 'jest', passed: 0, failed: 0 }
   return undefined
 }
 
@@ -416,7 +418,8 @@ export function testLight(run, command, at, nowMs, kind = 'be') {
   const detail = [run.runner + ': ' + run.passed + ' passed, ' + run.failed + ' failed' + (when ? ' (' + when + ')' : ''), command ? 'Command: ' + shorten(command, 100) : ''].filter(Boolean)
   const tail = when ? ', ' + when + (stale ? ' (over a day old)' : '') : ''
   if (run.failed > 0) return { color: COLORS.red, value: run.failed + ' fail', short: run.runner + ' run: ' + run.failed + ' failed, ' + run.passed + ' passed' + tail, detail }
-  return { color: stale ? COLORS.amber : COLORS.green, value: run.passed + ' pass', short: run.runner + ' run: ' + run.passed + ' passed' + tail, detail }
+  const none = run.passed === 0 ? ' (no tests relate to your changes; run npm test for the full suite)' : ''
+  return { color: stale ? COLORS.amber : COLORS.green, value: run.passed + ' pass', short: run.runner + ' run: ' + run.passed + ' passed' + none + tail, detail }
 }
 
 // events: Seq's /api/events array, newest first. windowMinutes only words the message; Seq filters by time.

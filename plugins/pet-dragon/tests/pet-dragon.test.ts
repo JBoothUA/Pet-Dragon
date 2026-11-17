@@ -651,3 +651,12 @@ test('clicking a dirty Git light lists the files and says what reset does', () =
   const many = dirtySummary(Array.from({ length: 20 }, (_, i) => ' M f' + i + '.ts'), 'b', 15)
   expect(many).toContain('and 5 more')
 })
+
+test('a jest run with nothing related to the change is a clean zero, not a missing summary', () => {
+  const none = parseTestRun('npm run test -- --silent --changedSince=origin/development --passWithNoTests', 'No tests found related to files changed since "origin/development".')
+  expect(none).toEqual({ runner: 'jest', passed: 0, failed: 0 })
+  const light = testLight(none, 'npm run test', 1, 1, 'fe')
+  expect(light.value).toBe('0 pass')
+  expect(light.short).toContain('no tests relate to your changes')
+  expect(parseTestRun('dotnet test', 'Build FAILED.')).toBeUndefined()
+})
