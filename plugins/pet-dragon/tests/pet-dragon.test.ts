@@ -11,6 +11,10 @@ import {
   jiraLight,
   prLight,
   seqLight,
+  aiHealthLight,
+  teamCiLight,
+  hangfireLight,
+  deployLight,
   radarLight,
   meetLight,
   shouldRemindMeeting,
@@ -662,4 +666,64 @@ test('a jest run with nothing related to the change is a clean zero, not a missi
   expect(light.value).toBe('0 pass')
   expect(light.short).toContain('no tests relate to your changes')
   expect(parseTestRun('dotnet test', 'Build FAILED.')).toBeUndefined()
+})
+
+test('aiHealthLight judges a spike against the environment\'s own normal', () => {
+  const normal = { n: 61, f: 1, p95: 1698, bn: 14511, bf: 293, bp95: 1884, top: [] }
+  expect(aiHealthLight('prod', normal).color).toBe('#3ddc84')
+  const spike = { n: 100, f: 12, p95: 1700, bn: 14511, bf: 293, bp95: 1884, top: [{ name: 'GET /api/v1.0/cases', count: 9 }] }
+  const red = aiHealthLight('prod', spike)
+  expect(red.color).toBe('#ff5252')
+  expect(red.short).toContain('spiking')
+  expect(red.detail.join(' ')).toContain('GET /api/v1.0/cases')
+  // QA normally fails 83% of requests, so 85% and 99% are both just QA being QA
+  const qaBase = { bn: 6357, bf: 5294, bp95: 300, top: [] }
+  expect(aiHealthLight('qa', { ...qaBase, n: 100, f: 85, p95: 300 }).color).toBe('#3ddc84')
+  expect(aiHealthLight('qa', { ...qaBase, n: 100, f: 99, p95: 300 }).color).toBe('#3ddc84')
+})
+
+test('aiHealthLight is quiet with no traffic and grey when unreadable', () => {
+  expect(aiHealthLight('uat', { n: 0, f: 0, bn: 0, bf: 0 }).value).toBe('quiet')
+  expect(aiHealthLight('prod', { error: 'The remote server returned an error: (401)' }).short).toContain('401')
+  expect(aiHealthLight('prod', undefined).value).toBe('?')
+})
+
+test('aiHealthLight flags a slow p95 as amber', () => {
+  const slow = aiHealthLight('prod', { n: 80, f: 0, p95: 6000, bn: 10000, bf: 10, bp95: 1500, top: [] })
+  expect(slow.color).toBe('#ffc107')
+  expect(slow.short).toContain('p95')
+})
+
+test('hangfireLight sums job errors across environments', () => {
+  expect(hangfireLight({ prod: { hangfire: { count: 0 } }, qa: { hangfire: { count: 0 } } }).value).toBe('ok')
+  const l = hangfireLight({ prod: { hangfire: { count: 2, last: '2026-11-18T03:00:00Z', msg: 'Job failed' } }, qa: { hangfire: { count: 0 } } })
+  expect(l.color).toBe('#ff5252')
+  expect(l.value).toBe('2 err')
+  expect(hangfireLight({ qa: { hangfire: { count: 1, last: '2026-11-18T03:00:00Z', msg: 'x' } } }).color).toBe('#ffc107')
+  expect(hangfireLight({ prod: { error: 'x' } }).value).toBe('?')
+})
+
+test('deployLight is news for a day after a release branch moves', () => {
+  const now = Date.parse('2026-11-18T12:00:00Z')
+  const moved = deployLight({ prodRef: 'origin/release/prod/26.11.2', prodAt: now - 2 * 3_600_000, prodTickets: ['C3-100', 'C3-101'] }, now)
+  expect(moved.color).toBe('#ffc107')
+  expect(moved.short).toContain('C3-100, C3-101')
+  const old = deployLight({ prodRef: 'origin/release/prod/26.11.2', prodAt: now - 3 * 86_400_000 }, now)
+  expect(old.color).toBe('#3ddc84')
+  const next = deployLight({ prodRef: 'origin/release/prod/26.11.2', nextRef: 'origin/release/next/26.12.0', nextNew: 4, nextAt: now - 3_600_000 }, now)
+  expect(next.value).toBe('next +4')
+  expect(deployLight(undefined, now).value).toBe('?')
+})
+
+test('teamCiLight judges pipelines as a team, not one PR', () => {
+  const run = (n, result) => ({ build_number: n, state: { name: 'COMPLETED', result: { name: result } }, target: { source: 'feat/C3-' + n, destination: 'development' } })
+  const ok = Array.from({ length: 8 }, (_, i) => run(100 - i, 'SUCCESSFUL'))
+  expect(teamCiLight(ok, 'a/b').color).toBe('#3ddc84')
+  expect(teamCiLight([run(101, 'FAILED'), ...ok.slice(1)], 'a/b').color).toBe('#ffc107')
+  const bad = teamCiLight([run(105, 'FAILED'), run(104, 'FAILED'), run(103, 'FAILED'), run(102, 'FAILED'), ...ok], 'a/b')
+  expect(bad.color).toBe('#ff5252')
+  expect(bad.value).toBe('4/8')
+  expect(bad.detail.length).toBe(4)
+  expect(teamCiLight([run(1, 'FAILED')], 'a/b').value).toBe('quiet')
+  expect(teamCiLight(undefined, 'a/b').value).toBe('?')
 })

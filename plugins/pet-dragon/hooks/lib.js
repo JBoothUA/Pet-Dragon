@@ -373,6 +373,24 @@ export function pipelineLight(runs, branch, repo, anyBranch) {
   return { color: COLORS.working, value: 'running', short: 'Pipeline ' + tag + where + ' is ' + (state || 'running').toLowerCase().replace('_', ' '), detail, build: r.build_number, url }
 }
 
+// runs: twg bb pipeline query for every branch and PR, newest first. Judged as a team: one red PR is that PR's problem,
+// but most of the recent runs failing means something shared (development, the pipeline, a service) is broken.
+export function teamCiLight(runs, repo) {
+  if (!Array.isArray(runs)) return { color: COLORS.grey, value: '?', short: 'Could not read Bitbucket Pipelines (is twg logged in?)', detail: [] }
+  const done = runs.filter((r) => r.state?.name === 'COMPLETED' && r.state?.result?.name !== 'STOPPED')
+  if (done.length < 3) return { color: COLORS.grey, value: 'quiet', short: 'Only ' + done.length + ' finished pipeline run(s) lately, too few to judge', detail: [] }
+  const recent = done.slice(0, 8)
+  const failed = recent.filter((r) => r.state.result?.name !== 'SUCCESSFUL')
+  const url = (r) => (repo ? 'https://bitbucket.org/' + repo + '/pipelines/results/' + r.build_number : undefined)
+  const who = (r) => (r.target?.source ?? r.target?.ref_name ?? '?') + (r.target?.destination ? ' -> ' + r.target.destination : '')
+  const detail = failed.slice(0, 6).map((r) => link('#' + r.build_number + '  ' + (r.state.result?.name ?? 'failed').toLowerCase() + '  ' + shorten(who(r), 70), url(r)))
+  const value = recent.length - failed.length + '/' + recent.length
+  const latestBad = done[0].state.result?.name !== 'SUCCESSFUL'
+  if (failed.length * 2 >= recent.length) return { color: COLORS.red, value, short: failed.length + ' of the last ' + recent.length + ' pipeline runs failed across the team: something shared may be broken', detail, url: url(failed[0]) }
+  if (failed.length >= 2 || latestBad) return { color: COLORS.amber, value, short: failed.length + ' of the last ' + recent.length + ' pipeline runs failed' + (latestBad ? ' (the newest one)' : ''), detail, url: url(failed[0]) }
+  return { color: COLORS.green, value, short: 'All but ' + failed.length + ' of the last ' + recent.length + ' pipeline runs passed', detail }
+}
+
 // A Bash tool result has no exit code, so a test run is read off the runner's own summary line.
 const TEST_COMMAND = /\b(dotnet\s+test|npm\s+(run\s+)?test|npx\s+jest|jest|k6\s+run|playwright\s+test|vitest)\b/i
 
@@ -440,6 +458,59 @@ export function seqLight(events, windowMinutes, limit, seqUrl) {
   )
   const url = base ? base + encodeURIComponent("@Level in ['Error', 'Fatal']") : undefined
   return { color: COLORS.red, value: label, short: label + ' error(s) in Seq in the last ' + windowMinutes + ' minutes', detail, url }
+}
+
+// ---- Production awareness ----
+
+// h: one environment from scripts/ai-probe.ps1 { n, f, p95, bn, bf, bp95, top }, the last 15 minutes against the previous 24 hours.
+// A spike is judged against that environment's own normal, so a QA that always fails does not stay red.
+export function aiHealthLight(env, h) {
+  const name = env.toUpperCase()
+  if (!h || h.error) return { color: COLORS.grey, value: '?', short: name + ' App Insights could not be read' + (h?.error ? ': ' + h.error : ''), detail: [] }
+  const rate = (f, n) => (n > 0 ? (100 * f) / n : 0)
+  const now = rate(h.f, h.n)
+  const base = rate(h.bf, h.bn)
+  const baseLine = h.bn > 0 ? 'Previous 24h: ' + h.bn + ' requests, ' + base.toFixed(1) + '% failed' + (h.bp95 ? ', p95 ' + Math.round(h.bp95) + ' ms' : '') : 'No traffic in the previous 24h'
+  if (h.n < 10) return { color: COLORS.grey, value: 'quiet', short: name + ': only ' + h.n + ' request(s) in the last 15 minutes. ' + baseLine, detail: [baseLine] }
+  const failing = (h.top ?? []).map((t) => t.count + 'x ' + shorten(t.name, 70))
+  const detail = ['Last 15 min: ' + h.n + ' requests, ' + now.toFixed(1) + '% failed' + (h.p95 ? ', p95 ' + Math.round(h.p95) + ' ms' : ''), baseLine, ...failing.map((f) => 'Failing: ' + f)]
+  const slow = h.bp95 > 0 && h.p95 >= h.bp95 * 2.5 && h.p95 > 1000
+  const value = now.toFixed(now < 10 ? 1 : 0) + '%'
+  if (now >= Math.max(2, base * 3)) return { color: COLORS.red, value, short: name + ' failures spiking: ' + now.toFixed(1) + '% of requests failed in the last 15 minutes (normal ' + base.toFixed(1) + '%)', detail }
+  if (now >= Math.max(1, base * 2) || slow) {
+    const why = slow ? 'p95 ' + Math.round(h.p95) + ' ms is ' + (h.p95 / h.bp95).toFixed(1) + 'x normal' : now.toFixed(1) + '% failing, normal ' + base.toFixed(1) + '%'
+    return { color: COLORS.amber, value, short: name + ' is off its normal: ' + why, detail }
+  }
+  return { color: COLORS.green, value, short: name + ' normal: ' + now.toFixed(1) + '% failed over ' + h.n + ' requests in the last 15 minutes', detail }
+}
+
+// envs: { prod, qa, uat } from ai-probe.ps1; the count and newest message of Hangfire errors in the last 6 hours
+export function hangfireLight(envs) {
+  if (!envs) return { color: COLORS.grey, value: '?', short: 'Hangfire errors could not be read from App Insights', detail: [] }
+  const rows = Object.entries(envs).filter(([, h]) => h && !h.error && h.hangfire)
+  if (rows.length === 0) return { color: COLORS.grey, value: '?', short: 'Hangfire errors could not be read from App Insights', detail: [] }
+  const bad = rows.filter(([, h]) => h.hangfire.count > 0)
+  const total = bad.reduce((a, [, h]) => a + h.hangfire.count, 0)
+  if (total === 0) return { color: COLORS.green, value: 'ok', short: 'No Hangfire job errors in the last 6 hours (' + rows.map(([e]) => e.toUpperCase()).join(', ') + ')', detail: [] }
+  const detail = bad.map(([e, h]) => e.toUpperCase() + ': ' + h.hangfire.count + ' error(s), latest ' + (h.hangfire.last ?? '').slice(11, 16) + 'Z ' + shorten(h.hangfire.msg ?? '', 90))
+  const prod = bad.some(([e]) => e === 'prod')
+  return { color: prod || total >= 5 ? COLORS.red : COLORS.amber, value: total + ' err', short: total + ' Hangfire job error(s) in the last 6 hours (' + bad.map(([e]) => e.toUpperCase()).join(', ') + ')', detail }
+}
+
+// seen: { prodRef, prodAt, prodTickets, nextRef, nextAt, nextNew } kept between polls (see deployState in register.js)
+// A release branch that moved is news for a day, then it is just the way things are
+export function deployLight(seen, nowMs) {
+  if (!seen?.prodRef) return { color: COLORS.grey, value: '?', short: 'No release/prod branch found to track', detail: [] }
+  const short = (ref) => String(ref).replace(/^origin\/release\/(prod|next)\//, '')
+  const fresh = (at) => typeof at === 'number' && nowMs - at < 24 * 3_600_000
+  const detail = []
+  const tickets = (seen.prodTickets ?? []).join(', ')
+  detail.push('Prod: ' + short(seen.prodRef) + (seen.prodAt ? ' (new ' + ago(seen.prodAt, nowMs) + ')' : ''))
+  if (tickets) detail.push('Shipped to prod: ' + tickets)
+  if (seen.nextRef) detail.push('Next: ' + short(seen.nextRef) + (seen.nextNew ? ' (+' + seen.nextNew + ' new commit(s) ' + (seen.nextAt ? ago(seen.nextAt, nowMs) : '') + ')' : ''))
+  if (fresh(seen.prodAt)) return { color: COLORS.amber, value: 'prod ' + short(seen.prodRef), short: 'release/prod moved to ' + short(seen.prodRef) + ' ' + ago(seen.prodAt, nowMs) + (tickets ? ': ' + tickets : ''), detail }
+  if (fresh(seen.nextAt) && seen.nextNew) return { color: COLORS.teal, value: 'next +' + seen.nextNew, short: 'release/next ' + short(seen.nextRef) + ' got ' + seen.nextNew + ' new commit(s) ' + ago(seen.nextAt, nowMs), detail }
+  return { color: COLORS.green, value: short(seen.prodRef), short: 'release/prod is on ' + short(seen.prodRef) + ' (no release branch movement in the last day)', detail }
 }
 
 // ---- Token coach ----

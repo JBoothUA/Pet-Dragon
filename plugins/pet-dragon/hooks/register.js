@@ -23,6 +23,10 @@ import {
   parseGitStatus,
   gitLight,
   pipelineLight,
+  aiHealthLight,
+  teamCiLight,
+  hangfireLight,
+  deployLight,
   seqLight,
   radarLight,
   releaseForecast,
@@ -85,6 +89,7 @@ const DEFAULTS = {
   seq_window_minutes: 15,
   ui_port: 5173,
   radar_poll_minutes: 10,
+  ai_poll_minutes: 5,
   db_scripts_dir: '',
   auto_test_command: '',
   auto_fe_test_command: '',
@@ -121,6 +126,12 @@ const SOURCES = [
   { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, parent: 'radar' },
   { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, parent: 'radar' },
   { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
+  { id: 'deploy', label: 'Deploy', title: 'Release branch movement', row: 3, parent: 'radar' },
+  { id: 'aiprod', label: 'Prod Err', title: 'Production errors (App Insights)', row: 5 },
+  { id: 'aiqa', label: 'QA Err', title: 'QA errors (App Insights)', row: 5, parent: 'aiprod' },
+  { id: 'aiuat', label: 'UAT Err', title: 'UAT errors (App Insights)', row: 5, parent: 'aiprod' },
+  { id: 'hangfire', label: 'Jobs', title: 'Hangfire job errors', row: 5, parent: 'aiprod' },
+  { id: 'cidev', label: 'Team CI', title: 'Pipelines across every open and recent PR', row: 5 },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
   { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
   { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4 },
@@ -130,6 +141,8 @@ const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s
 // These describe this session's repo and branch, so they are never shared through $.store
 const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'fe-tests', 'radar', 'ctx', 'day'])
 const ERROR_LIMIT = 50
+// MoveDocs Application Insights AppIds (movedocs plugin: references/environment-map.md). Stage and QA2 share QA's.
+const AI_APPS = { prod: 'bfc858e3-8503-4424-8f0c-c7ec004eaadc', qa: '4717a896-3727-4609-84b2-84206a64f966', uat: '18206e65-6006-472f-95d3-2045521a5bec' }
 const SESSION_BEAT_MAX_AGE_MS = 3 * 60_000
 
 let opts = { ...DEFAULTS }
@@ -164,6 +177,8 @@ function intervalMs(id) {
   if (id === 'pipeline') return Number(opts.pipeline_poll_minutes) * 60_000
   if (id === 'seq') return Number(opts.seq_poll_seconds) * 1000
   if (id === 'radar') return Number(opts.radar_poll_minutes) * 60_000
+  if (id === 'aiprod') return Number(opts.ai_poll_minutes) * 60_000
+  if (id === 'cidev') return Math.max(Number(opts.pipeline_poll_minutes), 5) * 60_000
   return Number(opts.bitbucket_poll_minutes) * 60_000
 }
 
@@ -208,6 +223,9 @@ function lightUrl(id) {
   if (id === 'seq') return opts.seq_url
   if (id === 'ui') return 'http://localhost:' + opts.ui_port
   if (id === 'radar') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/branches/'
+  if (id === 'aiprod' || id === 'aiqa' || id === 'aiuat' || id === 'hangfire') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
+  if (id === 'cidev') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
+  if (id === 'deploy') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/branches/?query=release'
   if (id === 'reviews') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pull-requests/?state=OPEN&reviewer=me'
   if (id === 'merged') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/commits/branch/development'
   return undefined
@@ -318,6 +336,7 @@ async function poll($, id, force) {
         setLight('drift', driftLight(undefined), now)
         setLight('merged', mergedLight(undefined), now)
         setLight('ship', shipLight(undefined), now)
+        setLight('deploy', deployLight(undefined, now), now)
       } else {
         const git = async (args, timeoutMs = 30_000) => {
           const r = await $.process.run(['git', '-C', repoRoot, ...args], { timeoutMs })
@@ -341,6 +360,7 @@ async function poll($, id, force) {
           localDay(new Date(now)),
         )
         setLight('radar', radarLight(prod ? { prod, next, nextCommits, devCommits, prodAt, devAt, forecast } : undefined), now)
+        await trackDeploys($, { prod, next, git, subjects, now })
 
         const mergedOut = await git(['log', 'origin/development', '--first-parent', '--since=midnight', '--pretty=%an|%s'])
         setLight('merged', mergedLight(mergedOut === undefined ? undefined : lines(mergedOut)), now)
@@ -374,6 +394,23 @@ async function poll($, id, force) {
           setLight('drift', driftLight({ branch: lights.git?.branch ?? 'HEAD', behind, overlap: mine.filter((f) => theirs.has(f)) }), now)
         }
       }
+    } else if (key === 'aiprod') {
+      const was = lights.aiprod?.color
+      const envs = isWindows ? await runPowerShell($, 'ai-probe.ps1', ['-Apps', Object.entries(AI_APPS).map(([k, v]) => k + '=' + v).join(';')]) : null
+      const bad = !envs || envs._error
+      const off = { color: COLORS.grey, value: '?', short: !isWindows ? 'App Insights checks need Windows' : envs?._error ?? 'App Insights could not be read', detail: [] }
+      setLight('aiprod', bad ? off : aiHealthLight('prod', envs.prod), now)
+      setLight('aiqa', bad ? off : aiHealthLight('qa', envs.qa), now)
+      setLight('aiuat', bad ? off : aiHealthLight('uat', envs.uat), now)
+      setLight('hangfire', bad ? off : hangfireLight(envs), now)
+      alertOnRed($, 'aiprod', was, 'PRODUCTION')
+    } else if (key === 'cidev') {
+      // This repo runs pipelines on pull requests only (nothing on a push to development or main), so team CI health is read off recent PR runs
+      const [workspace, repo] = String(opts.bitbucket_repo).split('/')
+      const was = lights.cidev?.color
+      const r = await $.process.run(['twg', 'bb', 'pipeline', 'query', '-w', workspace, '-r', repo, '-n', '20', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 120_000 })
+      setLight('cidev', teamCiLight(r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined, opts.bitbucket_repo), now)
+      alertOnRed($, 'cidev', was, 'CI is failing across PRs')
     } else if (key === 'seq') {
       const windowMin = Number(opts.seq_window_minutes)
       const from = new Date(now - windowMin * 60_000).toISOString()
@@ -400,6 +437,36 @@ async function poll($, id, force) {
     syncPulse($)
     $.ui.invalidate('ui.render')
   }
+}
+
+// Toast once when a light turns red, not on the first reading or while it stays red
+function alertOnRed($, id, was, label) {
+  const l = lights[id]
+  if (was && was !== COLORS.red && l?.color === COLORS.red) $.ui.toast('Dragon: ' + label + '. ' + l.short)
+}
+
+// Release branches are the nearest thing to a deploy marker git has. The branch each poll saw last time is kept
+// in $.store, so a move shows what it brought (tickets for prod, commit count for next) and is toasted once.
+async function trackDeploys($, { prod, next, git, subjects, now }) {
+  const sha = async (ref) => (ref ? (await git(['rev-parse', ref]))?.trim() : undefined)
+  const [prodSha, nextSha] = [await sha(prod), await sha(next)]
+  const prev = (await $.store.get('deploy:seen')) ?? {}
+  const seen = { ...prev, prodRef: prod, nextRef: next }
+  if (prodSha && prev.prodSha && prev.prodSha !== prodSha) {
+    seen.prodAt = now
+    seen.prodTickets = ticketsIn(await subjects(prev.prodSha + '..' + prodSha))
+    $.ui.toast('Dragon: release/prod moved to ' + String(prod).replace(/^origin\/release\/prod\//, '') + (seen.prodTickets.length ? ' with ' + seen.prodTickets.join(', ') : ''))
+  }
+  if (nextSha && prev.nextSha && prev.nextSha !== nextSha) {
+    const added = Number((await git(['rev-list', '--count', prev.nextSha + '..' + nextSha]))?.trim())
+    const stillFresh = typeof prev.nextAt === 'number' && now - prev.nextAt < 24 * 3_600_000
+    seen.nextNew = (stillFresh ? prev.nextNew ?? 0 : 0) + (Number.isFinite(added) ? added : 0)
+    seen.nextAt = now
+  }
+  seen.prodSha = prodSha
+  seen.nextSha = nextSha
+  await $.store.set('deploy:seen', seen)
+  setLight('deploy', deployLight(seen, now), now)
 }
 
 // twg lists every open PR you are a reviewer on, approved or not, so drop the ones you already approved.
@@ -584,7 +651,7 @@ async function autoTestPlan($, kind) {
   }
   if (!(await list('phoenix-ui/package.json')).length) return undefined
   // --maxWorkers: uncapped, Jest starts one ~700 MB worker per core (phoenix-ui/AGENTS.md says always pass it)
-  const npm = ['npm', 'run', 'test', '--', '--silent', '--maxWorkers=2']
+  const npm = ['npm', 'run', 'test', '--', '--silent', '--maxWorkers=4']
   const parts = Array.from({ length: FE_SHARDS }, (_, i) => ({ argv: lowPriority($, shellWrap([...npm, '--shard=' + (i + 1) + '/' + FE_SHARDS])), label: 'part ' + (i + 1) + ' of ' + FE_SHARDS }))
   return { cwd: repoRoot + '/phoenix-ui', shown: 'npm run test, full suite in ' + FE_SHARDS + ' parts', parts }
 }
@@ -802,7 +869,7 @@ function noteTyping($, typing) {
 }
 
 // Anything the person or Claude does wakes the dragon
-const POLL_IDS = ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket']
+const POLL_IDS = ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev']
 function noteActivity($) {
   lastActivity = Date.now()
   if (wasSleepy) {
@@ -827,7 +894,7 @@ function checkSleepy($) {
 }
 
 // Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
-const NOT_FOR_HEADLINE = new Set(['ship', 'day'])
+const NOT_FOR_HEADLINE = new Set(['ship', 'day', 'deploy', 'aiqa', 'aiuat'])
 const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.label, light: lights[s.id] })))
 
 function moodNow() {
@@ -988,6 +1055,8 @@ export function register(on, options) {
     $.clock.after(5_000, () => poll($, 'jira'))
     $.clock.after(6_000, () => poll($, 'pipeline'))
     $.clock.after(8_000, () => poll($, 'bitbucket'))
+    $.clock.after(9_000, () => poll($, 'aiprod'))
+    $.clock.after(10_000, () => poll($, 'cidev'))
     // Nobody is here (the dragon is asleep): no point spawning git, twg and PowerShell every few seconds in every open session. Activity wakes it and noteActivity catches the lights up.
     for (const id of POLL_IDS) $.clock.every(intervalMs(id), () => (moodNow().asleep ? undefined : poll($, id)))
     $.clock.every(10 * 60_000, () => loadSkills($))
@@ -1143,7 +1212,7 @@ export function register(on, options) {
       // The light rows make the band taller than the sprite: sit it in the middle of them instead of at the top.
       // alignSelf: 'center' rounds the odd leftover row down onto the bottom, one row too low, so the offset is explicit.
       alignSelf: 'flex-start',
-      marginTop: 1,
+      marginTop: 2,
       width: SPRITE_WIDTH + 1,
       hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>
@@ -1182,7 +1251,7 @@ export function register(on, options) {
       ],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'AI']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'AI', 'Watch']
     const nowMs = Date.now()
     const head = currentHeadline()
     const headlineRow = Text({
@@ -1308,7 +1377,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(2), lightRow(3), lightRow(4), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(2), lightRow(3), lightRow(5), lightRow(4), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
@@ -1393,7 +1462,7 @@ export function register(on, options) {
             hotkey: 'r',
             plain: true,
             onPress: () => {
-              for (const id of ['git', 'coreapi', 'seq', 'outlook', 'jira', 'pipeline', 'bitbucket']) poll($, id, true)
+              for (const id of ['git', 'coreapi', 'seq', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev']) poll($, id, true)
             },
           }),
           Button({
