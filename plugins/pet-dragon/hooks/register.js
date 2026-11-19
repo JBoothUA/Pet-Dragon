@@ -24,6 +24,9 @@ import {
   gitLight,
   pipelineLight,
   aiHealthLight,
+  depsLight,
+  bugsLight,
+  blockedPrs,
   costLight,
   cacheLight,
   CACHE_TTL_MS,
@@ -140,6 +143,8 @@ const SOURCES = [
   { id: 'aiqa', label: 'QA', title: 'QA errors (App Insights)', hl: 'QA errors', row: 5, col: 2, parent: 'aiprod' },
   { id: 'aiuat', label: 'UAT', title: 'UAT errors (App Insights)', hl: 'UAT errors', row: 5, col: 3, parent: 'aiprod' },
   { id: 'hangfire', label: 'Jobs', title: 'Hangfire job errors', row: 5, col: 4, parent: 'aiprod' },
+  { id: 'deps', label: 'Deps', title: 'Dependencies failing in prod, QA or UAT (App Insights)', row: 5, col: 5, parent: 'aiprod' },
+  { id: 'bugs', label: 'Bugs', title: 'New Jira bugs in the last 24 hours', row: 5, col: 6 },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
@@ -196,6 +201,7 @@ function intervalMs(id) {
   if (id === 'seq') return Number(opts.seq_poll_seconds) * 1000
   if (id === 'radar') return Number(opts.radar_poll_minutes) * 60_000
   if (id === 'aiprod') return Number(opts.ai_poll_minutes) * 60_000
+  if (id === 'bugs') return Number(opts.radar_poll_minutes) * 60_000
   if (id === 'cidev') return Math.max(Number(opts.pipeline_poll_minutes), 5) * 60_000
   return Number(opts.bitbucket_poll_minutes) * 60_000
 }
@@ -235,6 +241,7 @@ function clickHint(id, l) {
   if (id === 'git' && (l?.value ?? '').includes('↓')) return 'Click to merge origin into this branch (asks first)'
   if (id === 'drift' && l?.value?.startsWith('↓')) return 'Click to correct the drift (merges origin/development into ' + (lights.git?.branch ?? 'your branch') + ', asks first)'
   if ((id === 'tests' || id === 'fe-tests') && l?.value === 'unclear') return 'Click to run all of them again'
+  if (id === 'cache') return 'Click to run /compact (asks what the summary should keep)'
   if (lightUrl(id)) return 'Click to open'
   return 'Click for details in /dragon'
 }
@@ -251,7 +258,7 @@ function lightUrl(id) {
   if (id === 'seq') return opts.seq_url
   if (id === 'ui') return 'http://localhost:' + opts.ui_port
   if (id === 'radar') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/branches/'
-  if (id === 'aiprod' || id === 'aiqa' || id === 'aiuat' || id === 'hangfire') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
+  if (id === 'aiprod' || id === 'aiqa' || id === 'aiuat' || id === 'hangfire' || id === 'deps') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
   if (id === 'cidev') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
   if (id === 'reviews') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pull-requests/?state=OPEN&reviewer=me'
   if (id === 'merged') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/commits/branch/development'
@@ -323,8 +330,18 @@ async function poll($, id, force) {
     } else if (key === 'bitbucket') {
       const prQuery = (role) =>
         $.process.run(['twg', 'prs', 'query', '--scope', 'me', '--role', role, '--state', 'open', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 180_000 })
-      const [r, rv] = await Promise.all([prQuery('author'), prQuery('reviewer')])
-      setLight(key, prLight(parseJson(r.stdout), opts.pr_repo_id), now)
+      const [workspace, repo] = String(opts.bitbucket_repo).split('/')
+      // Recent pipeline runs say which of your PRs are failing; if they cannot be read the PRs are still listed
+      const pipelineRuns = () =>
+        $.process.run(['twg', 'bb', 'pipeline', 'query', '-w', workspace, '-r', repo, '-n', '40', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 120_000 }).then(
+          (x) => (x.exitCode === 0 ? parseJsonAny(x.stdout) : undefined),
+          () => undefined,
+        )
+      const wasPrs = lights.bitbucket?.color
+      const [r, rv, runs] = await Promise.all([prQuery('author'), prQuery('reviewer'), pipelineRuns()])
+      const mine = parseJson(r.stdout)
+      setLight(key, prLight(mine, opts.pr_repo_id, blockedPrs(mine, opts.pr_repo_id, runs, now)), now)
+      alertOnRed($, 'bitbucket', wasPrs, 'A PR of yours has a failing pipeline')
       setLight('reviews', reviewLight(await withoutMyApprovals($, parseJson(rv.stdout)), opts.pr_repo_id), now)
     } else if (key === 'git') {
       if (!repoRoot) {
@@ -429,6 +446,7 @@ async function poll($, id, force) {
       setLight('aiqa', bad ? off : aiHealthLight('qa', envs.qa), now)
       setLight('aiuat', bad ? off : aiHealthLight('uat', envs.uat), now)
       setLight('hangfire', bad ? off : hangfireLight(envs), now)
+      setLight('deps', bad ? off : depsLight(envs), now)
       alertOnRed($, 'aiprod', was, 'PRODUCTION')
     } else if (key === 'cidev') {
       // This repo runs pipelines on pull requests only (nothing on a push to development or main), so team CI health is read off recent PR runs
@@ -437,6 +455,12 @@ async function poll($, id, force) {
       const r = await $.process.run(['twg', 'bb', 'pipeline', 'query', '-w', workspace, '-r', repo, '-n', '20', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 120_000 })
       setLight('cidev', teamCiLight(r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined, opts.bitbucket_repo), now)
       alertOnRed($, 'cidev', was, 'CI is failing across PRs')
+    } else if (key === 'bugs') {
+      const was = lights.bugs?.color
+      const jql = 'project in (C3, PHX) AND issuetype = Bug AND created >= -1d AND status not in (DISREGARD, COMPLETED) ORDER BY created DESC'
+      const r = await $.process.run(['twg', 'jira', 'workitem', 'query', '--jql', jql, '--limit', '30', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 90_000 })
+      setLight('bugs', bugsLight(r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined), now)
+      alertOnRed($, 'bugs', was, 'New urgent bug')
     } else if (key === 'seq') {
       const windowMin = Number(opts.seq_window_minutes)
       const from = new Date(now - windowMin * 60_000).toISOString()
@@ -910,6 +934,31 @@ async function refreshMonth($, force) {
   }
 }
 
+// Clicking the Cache light: /compact, asking first what the summary should keep. The cache is warm at the cheapest moment to do it.
+const COMPACT_KEEP = 'Keep the current task, decisions made, file paths, and open TODOs.'
+async function compactNow($) {
+  if (compacting) return
+  if (session.state !== 'idle' && session.state !== 'error') return $.ui.toast('Dragon: a turn is running. Click Cache again when it finishes to compact.')
+  let answer
+  try {
+    answer = await $.ui.ask('Compact the conversation? To redirect what the summary keeps, type it under "Other".', ['Keep the task, decisions and open TODOs', 'Compact with no redirection', 'Cancel'])
+  } catch {
+    return
+  }
+  if (answer === 'Cancel') return
+  const instructions = answer === 'Compact with no redirection' ? '' : answer === 'Keep the task, decisions and open TODOs' ? COMPACT_KEEP : String(answer ?? '').trim()
+  compacting = true
+  try {
+    const r = await $.session.compact(instructions ? { instructions } : {})
+    $.ui.toast(r?.skip ? 'Dragon: something vetoed the compact.' : 'Dragon compacted the conversation.')
+  } catch (err) {
+    $.ui.toast('Dragon could not compact: ' + shorten(err?.message ?? err, 80))
+  } finally {
+    compacting = false
+    await refreshContext($)
+  }
+}
+
 async function loadSkills($) {
   try {
     skills = indexSkills(await $.command.list(), $.plugin.name)
@@ -961,7 +1010,7 @@ function noteTyping($, typing) {
 }
 
 // Anything the person or Claude does wakes the dragon
-const POLL_IDS = ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev']
+const POLL_IDS = ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs']
 function noteActivity($) {
   lastActivity = Date.now()
   if (wasSleepy) {
@@ -988,7 +1037,7 @@ function checkSleepy($) {
 }
 
 // Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
-const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'aiuat'])
+const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'aiuat', 'bugs'])
 const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.hl ?? s.label, light: lights[s.id] })))
 
 function moodNow() {
@@ -1151,6 +1200,7 @@ export function register(on, options) {
     $.clock.after(8_000, () => poll($, 'bitbucket'))
     $.clock.after(9_000, () => poll($, 'aiprod'))
     $.clock.after(10_000, () => poll($, 'cidev'))
+    $.clock.after(11_000, () => poll($, 'bugs'))
     // Nobody is here (the dragon is asleep): no point spawning git, twg and PowerShell every few seconds in every open session. Activity wakes it and noteActivity catches the lights up.
     for (const id of POLL_IDS) $.clock.every(intervalMs(id), () => (moodNow().asleep ? undefined : poll($, id)))
     $.clock.every(10 * 60_000, () => loadSkills($))
@@ -1306,7 +1356,7 @@ export function register(on, options) {
       // The light rows make the band taller than the sprite: sit it in the middle of them instead of at the top.
       // alignSelf: 'center' rounds the odd leftover row down onto the bottom, one row too low, so the offset is explicit.
       alignSelf: 'flex-start',
-      marginTop: 1,
+      marginTop: 2,
       width: SPRITE_WIDTH + 1,
       hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>
@@ -1398,6 +1448,7 @@ export function register(on, options) {
               // An "unclear" test light has nothing worth opening: a click runs it again
               const kind = s.id === 'tests' ? 'be' : s.id === 'fe-tests' ? 'fe' : undefined
               if (kind && l?.value === 'unclear') return runTestKind($, kind, true)
+              if (s.id === 'cache') return compactNow($)
               const url = lightUrl(s.id)
               if (url) openUrl($, url)
               else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })
@@ -1591,7 +1642,7 @@ export function register(on, options) {
             hotkey: 'r',
             plain: true,
             onPress: () => {
-              for (const id of ['git', 'coreapi', 'seq', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev']) poll($, id, true)
+              for (const id of ['git', 'coreapi', 'seq', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs']) poll($, id, true)
             },
           }),
           Button({

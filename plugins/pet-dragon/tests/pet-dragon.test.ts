@@ -12,6 +12,9 @@ import {
   prLight,
   seqLight,
   aiHealthLight,
+  depsLight,
+  bugsLight,
+  blockedPrs,
   costLight,
   cacheLight,
   parseMonthly,
@@ -725,7 +728,7 @@ test('cacheLight counts down an hour from the last reply', () => {
   expect(cacheLight(now - 61 * 60_000, now, false).value).toBe('cold')
   const warm = cacheLight(now - 18 * 60_000, now, false)
   expect(warm.value).toBe('42m')
-  expect(warm.color).toBe('#ffb347')
+  expect(warm.color).toBe('#3ddc84')
   const expiring = cacheLight(now - (60 * 60_000 - 105_000), now, false)
   expect(expiring.value).toBe('1:45')
   expect(expiring.color).toBe('#ff5252')
@@ -761,4 +764,49 @@ test('costLight puts today and the month in one light, colored by the worse', ()
   expect(costLight(day, { color: '#8a8a8a', value: '?', short: 'x', detail: [] }).color).toBe('#3ddc84')
   expect(costLight(day, undefined).value).toBe('$4.20/$15.00')
   expect(costLight(undefined, undefined).value).toBe('?')
+})
+
+test('depsLight names the dependency that is failing more than usual', () => {
+  const dep = (target, f, n, bf, bn) => ({ target, type: 'SQL', f, n, bf, bn })
+  expect(depsLight({ prod: { deps: [] }, qa: { deps: [] } }).value).toBe('ok')
+  // a dependency that always fails (QA's vendor API) is not news
+  expect(depsLight({ qa: { deps: [dep('cimi.api', 90, 100, 5000, 6000)] } }).value).toBe('ok')
+  const l = depsLight({ prod: { deps: [dep('medprdsql01', 12, 100, 20, 20000)] }, qa: { deps: [] } })
+  expect(l.color).toBe('#ff5252')
+  expect(l.short).toContain('medprdsql01')
+  expect(l.detail[0]).toContain('PROD')
+  expect(depsLight({ prod: { error: 'x' } }).value).toBe('?')
+})
+
+test('bugsLight counts new bugs and flags the urgent ones', () => {
+  const bug = (key, priority) => ({ key, priority: { name: priority }, status: { name: 'Backlog' }, summary: 'Thing broke', url: 'https://keyjira.atlassian.net/browse/' + key })
+  expect(bugsLight({ data: { issues: [] } }).value).toBe('0')
+  const calm = bugsLight({ data: { issues: [bug('C3-1', 'New'), bug('C3-2', 'Medium')] } })
+  expect(calm.color).toBe('#1de9b6')
+  expect(calm.value).toBe('2')
+  const hot = bugsLight({ data: { issues: [bug('C3-3', 'Highest'), bug('C3-1', 'New')] } })
+  expect(hot.color).toBe('#ff5252')
+  expect(hot.value).toBe('2!')
+  expect(hot.short).toContain('C3-3')
+  expect(bugsLight(undefined).value).toBe('?')
+})
+
+test('a PR with a failing pipeline or no activity needs attention on the PRs light', () => {
+  const now = Date.parse('2026-11-19T12:00:00Z')
+  const pr = (n, updatedAt) => ({ title: 'C3-' + n + ' thing', url: 'https://bitbucket.org/k/p/pull-requests/' + n, repo: { id: 'r' }, updatedAt, commentCount: 1, reviewers: [] })
+  const json = { data: { pullRequests: [pr(10, '2026-11-19T10:00:00Z'), pr(11, '2026-11-19T10:00:00Z'), pr(12, '2026-11-15T10:00:00Z')] } }
+  const runs = [
+    { target: { pullrequest: { id: 10 } }, state: { name: 'COMPLETED', result: { name: 'FAILED' } } },
+    { target: { pullrequest: { id: 10 } }, state: { name: 'COMPLETED', result: { name: 'SUCCESSFUL' } } },
+    { target: { pullrequest: { id: 11 } }, state: { name: 'COMPLETED', result: { name: 'SUCCESSFUL' } } },
+  ]
+  const blocked = blockedPrs(json, 'r', runs, now)
+  expect(blocked[10].level).toBe('fail')
+  expect(blocked[11]).toBeUndefined()
+  expect(blocked[12].why).toContain('no activity')
+  const light = prLight(json, 'r', blocked)
+  expect(light.value).toBe('3!2')
+  expect(light.color).toBe('#ff5252')
+  expect(light.brief[0]).toContain('pipeline failed')
+  expect(prLight(json, 'r').value).toBe('3')
 })

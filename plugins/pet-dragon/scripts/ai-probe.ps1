@@ -51,6 +51,15 @@ union traces, exceptions
 | summarize c = count(), lastAt = max(timestamp), msg = any(coalesce(message, outerMessage))
 '@
 
+$depsKql = @'
+dependencies
+| where timestamp > ago(24h)
+| extend cur = timestamp > ago(15m)
+| summarize n = countif(cur), f = countif(cur and success == false), bn = countif(not(cur)), bf = countif(not(cur) and success == false) by target, type
+| where f > 0
+| top 5 by f desc
+'@
+
 $out = [ordered]@{}
 foreach ($pair in ($Apps -split ';')) {
   $name, $id = $pair -split '=', 2
@@ -60,9 +69,11 @@ foreach ($pair in ($Apps -split ';')) {
     $top = @()
     if ($h -and $h.f -gt 0) { $top = @(Invoke-Kql $id $topKql | ForEach-Object { @{ name = $_.name; count = $_.c } }) }
     $hf = Invoke-Kql $id $hangfireKql | Select-Object -First 1
+    $deps = @(Invoke-Kql $id $depsKql | ForEach-Object { @{ target = $_.target; type = $_.type; n = [int]$_.n; f = [int]$_.f; bn = [int]$_.bn; bf = [int]$_.bf } })
     $out[$name] = @{
       n = [int]$h.n; f = [int]$h.f; p95 = $h.p95; bn = [int]$h.bn; bf = [int]$h.bf; bp95 = $h.bp95
       top = $top
+      deps = $deps
       hangfire = @{ count = [int]$hf.c; last = $hf.lastAt; msg = $hf.msg }
     }
   } catch {

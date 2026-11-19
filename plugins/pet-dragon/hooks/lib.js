@@ -230,22 +230,25 @@ export function jiraLight(json) {
 }
 
 // repoId: only PRs in that Bitbucket repo are counted (twg returns every repo you authored in); empty counts all.
-export function prLight(json, repoId) {
+export function prLight(json, repoId, blocked = {}) {
   const all = json?.data?.pullRequests
   if (!Array.isArray(all)) return { color: COLORS.grey, value: '?', short: 'Could not read Bitbucket PRs (is twg logged in?)', detail: [] }
   const prs = repoId ? all.filter((p) => p.repo?.id === repoId) : all
   const others = all.length - prs.length
+  const why = (p) => blocked[prNumber(p.url)]
   const detail = prs.map((p) => {
     const reviewers = Array.isArray(p.reviewers) ? p.reviewers.length : 0
-    return link(p.title + ' (' + (p.ageDays ?? '?') + 'd, ' + (p.commentCount ?? 0) + ' comments, ' + reviewers + ' reviewer(s), ' + (p.sourceBranch ?? '?') + ' → ' + (p.destinationBranch ?? '?') + ')', p.url)
+    return link((why(p) ? '\u26a0 ' + why(p).why + ': ' : '') + p.title + ' (' + (p.ageDays ?? '?') + 'd, ' + (p.commentCount ?? 0) + ' comments, ' + reviewers + ' reviewer(s), ' + (p.sourceBranch ?? '?') + ' → ' + (p.destinationBranch ?? '?') + ')', p.url)
   })
   if (others > 0) detail.push(others + ' more open PR(s) in other repos are not counted')
   const brief = prs.map((p) => {
     // The title starts with the ticket number; reviews are what moves a PR, so the status is its comment count
-    return String(p.title ?? '').slice(0, 8).trim() + ' ' + (p.commentCount ?? 0) + 'c'
+    return String(p.title ?? '').slice(0, 8).trim() + ' ' + (p.commentCount ?? 0) + 'c' + (why(p) ? ' \u26a0 ' + why(p).why : '')
   })
+  const stuck = prs.filter(why)
+  const failing = stuck.some((p) => why(p).level === 'fail')
   const short = prs.length ? prs.length + ' open PR(s) you authored in phoenix' : 'You have no open PRs in phoenix'
-  return { color: prs.length ? COLORS.teal : COLORS.green, value: String(prs.length), short, detail, brief }
+  return { color: failing ? COLORS.red : stuck.length ? COLORS.amber : prs.length ? COLORS.teal : COLORS.green, value: String(prs.length) + (stuck.length ? '!' + stuck.length : ''), short: short + (stuck.length ? ', ' + stuck.length + ' need attention' : ''), detail, brief }
 }
 
 export function outlookLight(m) {
@@ -497,6 +500,65 @@ export function hangfireLight(envs) {
   return { color: prod || total >= 5 ? COLORS.red : COLORS.amber, value: total + ' err', short: total + ' Hangfire job error(s) in the last 6 hours (' + bad.map(([e]) => e.toUpperCase()).join(', ') + ')', detail }
 }
 
+// envs: { prod, qa, uat } from ai-probe.ps1, each with deps [{ target, type, n, f, bn, bf }]: what a request depends on (SQL, a vendor API, blob)
+// and how often calls to it fail, the last 15 minutes against the previous 24 hours. Says whether a failure is ours or a dependency's.
+export function depsLight(envs) {
+  const rows = Object.entries(envs ?? {}).filter(([, h]) => h && !h.error && Array.isArray(h.deps))
+  if (rows.length === 0) return { color: COLORS.grey, value: '?', short: 'Dependency failures could not be read from App Insights', detail: [] }
+  const rate = (f, n) => (n > 0 ? (100 * f) / n : 0)
+  const bad = rows.flatMap(([env, h]) =>
+    h.deps.flatMap((d) => {
+      const now = rate(d.f, d.n)
+      const base = rate(d.bf, d.bn)
+      if (d.f < 2 || d.n < 5) return []
+      const level = now >= Math.max(5, base * 3) ? 2 : now >= Math.max(2, base * 2) ? 1 : 0
+      return level ? [{ env, level, now, base, d }] : []
+    }),
+  )
+  if (bad.length === 0) return { color: COLORS.green, value: 'ok', short: 'No dependency (SQL, vendor APIs, storage) is failing more than usual in ' + rows.map(([e]) => e.toUpperCase()).join(', '), detail: [] }
+  bad.sort((a, b) => b.level - a.level || (a.env === 'prod' ? -1 : 1) - (b.env === 'prod' ? -1 : 1) || b.now - a.now)
+  const line = (x) => x.env.toUpperCase() + ': ' + shorten(x.d.target, 50) + ' (' + x.d.type + ') ' + x.now.toFixed(0) + '% failing (normal ' + x.base.toFixed(1) + '%), ' + x.d.f + ' of ' + x.d.n + ' calls'
+  const worst = bad[0]
+  const prodBad = bad.some((x) => x.env === 'prod' && x.level === 2)
+  return { color: prodBad || worst.level === 2 ? COLORS.red : COLORS.amber, value: bad.length + ' bad', short: bad.length + ' dependency(ies) failing more than usual. Worst: ' + line(worst), detail: bad.slice(0, 6).map(line) }
+}
+
+// json: twg jira workitem query for bugs created in the last 24 hours. Highest and High are urgent; "New" means nobody has triaged it yet.
+export function bugsLight(json, jiraBase) {
+  const issues = json?.data?.issues
+  if (!Array.isArray(issues)) return { color: COLORS.grey, value: '?', short: 'Could not read new Jira bugs (is twg logged in?)', detail: [] }
+  if (issues.length === 0) return { color: COLORS.green, value: '0', short: 'No new bugs in Jira in the last 24 hours', detail: [] }
+  const urgent = issues.filter((i) => /^(highest|high|blocker|critical)$/i.test(i.priority?.name ?? ''))
+  const detail = issues.slice(0, 8).map((i) => link(i.key + '  ' + (i.priority?.name ?? '?') + '  ' + (i.status?.name ?? '') + '  ' + shorten(i.summary ?? '', 90), i.url))
+  const jql = 'project in (C3, PHX) AND issuetype = Bug AND created >= -1d AND status not in (DISREGARD, COMPLETED) ORDER BY created DESC'
+  const url = (jiraBase ?? 'https://keyjira.atlassian.net') + '/issues/?jql=' + encodeURIComponent(jql)
+  const newest = issues[0]
+  const short = issues.length + ' new bug(s) in the last 24 hours' + (urgent.length ? ', ' + urgent.length + ' urgent (' + urgent.map((i) => i.key).join(', ') + ')' : ', none urgent') + '. Newest: ' + newest.key + ' ' + shorten(newest.summary ?? '', 70)
+  return { color: urgent.length ? COLORS.red : COLORS.teal, value: String(issues.length) + (urgent.length ? '!' : ''), short, detail, url }
+}
+
+// json: twg prs query for the PRs you authored; runs: twg bb pipeline query, newest first. A PR is blocked when its latest pipeline failed
+// or nothing has happened on it for two days. Returns { [prNumber]: { why, level: 'fail' | 'stale' } }.
+export function blockedPrs(json, repoId, runs, nowMs) {
+  const all = json?.data?.pullRequests
+  if (!Array.isArray(all)) return {}
+  const mine = repoId ? all.filter((p) => p.repo?.id === repoId) : all
+  const latest = new Map()
+  for (const r of Array.isArray(runs) ? runs : []) {
+    const id = r.target?.pullrequest?.id
+    if (id !== undefined && !latest.has(id)) latest.set(id, r)
+  }
+  const out = {}
+  for (const p of mine) {
+    const n = prNumber(p.url)
+    const r = latest.get(n)
+    const idle = typeof p.updatedAt === 'string' ? (nowMs - Date.parse(p.updatedAt)) / 86_400_000 : 0
+    if (r && r.state?.name === 'COMPLETED' && !['SUCCESSFUL', 'STOPPED'].includes(r.state?.result?.name)) out[n] = { why: 'pipeline failed', level: 'fail' }
+    else if (idle >= 2) out[n] = { why: 'no activity for ' + Math.floor(idle) + 'd', level: 'stale' }
+  }
+  return out
+}
+
 // ---- Prompt cache and account spend (ported from the session-hud-cli mod) ----
 
 // The cache lifetime is not reported per response: this session's requests use the 1-hour TTL, and a session in usage overage drops to 5 minutes
@@ -513,7 +575,7 @@ export function cacheLight(lastAt, nowMs, running) {
   const left = typeof lastAt === 'number' ? CACHE_TTL_MS - (nowMs - lastAt) : 0
   if (!(left > 0)) return { color: COLORS.tool, value: 'cold', short: typeof lastAt === 'number' ? 'The prompt cache has probably expired (over an hour since the last reply): the next message re-reads the whole context at full price' : 'No reply seen in this session yet, so the prompt cache is cold', detail: [note] }
   if (left <= 120_000) return { color: COLORS.red, value: clock(left), short: 'Prompt cache expires in ' + clock(left) + ': send the next message now to keep it warm, or the context is re-read at full price', detail: [note] }
-  return { color: COLORS.ember, value: Math.ceil(left / 60_000) + 'm', short: 'Prompt cache is warm for about ' + Math.ceil(left / 60_000) + ' more minute(s) (last reply ' + ago(lastAt, nowMs) + ')', detail: [note] }
+  return { color: COLORS.green, value: Math.ceil(left / 60_000) + 'm', short: 'Prompt cache is warm for about ' + Math.ceil(left / 60_000) + ' more minute(s) (last reply ' + ago(lastAt, nowMs) + '). A warm cache is the cheapest time to /compact: click to do it', detail: [note] }
 }
 
 // The account usage card's reply: { spend: { used: { amount_minor, currency, exponent }, limit: { amount_minor } } }, or undefined with no spend limit
