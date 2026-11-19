@@ -24,9 +24,13 @@ import {
   gitLight,
   pipelineLight,
   aiHealthLight,
+  costLight,
+  cacheLight,
+  CACHE_TTL_MS,
+  parseMonthly,
+  monthLight,
   teamCiLight,
   hangfireLight,
-  deployLight,
   seqLight,
   radarLight,
   releaseForecast,
@@ -126,21 +130,25 @@ const SOURCES = [
   { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, parent: 'radar' },
   { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, parent: 'radar' },
   { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
-  { id: 'deploy', label: 'Deploy', title: 'Release branch movement', row: 3, parent: 'radar' },
   { id: 'aiprod', label: 'Prod Err', title: 'Production errors (App Insights)', row: 5 },
   { id: 'aiqa', label: 'QA Err', title: 'QA errors (App Insights)', row: 5, parent: 'aiprod' },
   { id: 'aiuat', label: 'UAT Err', title: 'UAT errors (App Insights)', row: 5, parent: 'aiprod' },
   { id: 'hangfire', label: 'Jobs', title: 'Hangfire job errors', row: 5, parent: 'aiprod' },
   { id: 'cidev', label: 'Team CI', title: 'Pipelines across every open and recent PR', row: 5 },
+  { id: 'cache', label: 'Cache', title: 'Prompt cache', row: 4 },
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
-  { id: 'day', label: 'Today', title: 'Spend today', row: 4 },
+  { id: 'cost', label: 'Cost', title: 'Spend today and this month', row: 4 },
   { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4 },
   { id: 'tree', label: 'Tree', title: 'Worktrees', row: 4, parent: 'git' },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'fe-tests', 'radar', 'ctx', 'day'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'fe-tests', 'radar', 'ctx', 'cost', 'cache'])
 const ERROR_LIMIT = 50
+// The account usage the app's usage card shows (not a documented API: a failed reply keeps the last reading)
+const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
+const MONTHLY_REFRESH_MS = 10 * 60_000
+const MONTHLY_BACKOFF_MS = 15 * 60_000
 // MoveDocs Application Insights AppIds (movedocs plugin: references/environment-map.md). Stage and QA2 share QA's.
 const AI_APPS = { prod: 'bfc858e3-8503-4424-8f0c-c7ec004eaadc', qa: '4717a896-3727-4609-84b2-84206a64f966', uat: '18206e65-6006-472f-95d3-2045521a5bec' }
 const SESSION_BEAT_MAX_AGE_MS = 3 * 60_000
@@ -168,6 +176,16 @@ const TOUCHED_MAX = 50
 let affinity = {}
 let standupText = ''
 let standupBusy = false
+// The prompt cache clock: when the main agent last finished a reply, and how often the light is re-read (0 = not ticking)
+let lastReplyAt
+let cacheTimer = null
+let cacheEvery = 0
+let monthlyBusy = false
+let monthlyReading
+let monthlyError = ''
+let lastRateLimits
+let dayPart
+let monthPart
 
 function intervalMs(id) {
   if (id === 'coreapi') return Number(opts.coreapi_poll_seconds) * 1000
@@ -211,6 +229,16 @@ function syncPulse($) {
   }
 }
 
+// What a click on a light does, for its hover line. Mirrors the `open` handler in the band: every light answers a click.
+function clickHint(id, l) {
+  if (id === 'git' && (l?.value ?? '').includes('~')) return 'Click to review the uncommitted changes (asks before anything is reset)'
+  if (id === 'git' && (l?.value ?? '').includes('↓')) return 'Click to merge origin into this branch (asks first)'
+  if (id === 'drift' && l?.value?.startsWith('↓')) return 'Click to correct the drift (merges origin/development into ' + (lights.git?.branch ?? 'your branch') + ', asks first)'
+  if ((id === 'tests' || id === 'fe-tests') && l?.value === 'unclear') return 'Click to run all of them again'
+  if (lightUrl(id)) return 'Click to open'
+  return 'Click for details in /dragon'
+}
+
 // Where clicking a light goes (opened in Chrome); undefined = open the /dragon pane instead
 function lightUrl(id) {
   if (lights[id]?.url) return lights[id].url
@@ -225,7 +253,6 @@ function lightUrl(id) {
   if (id === 'radar') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/branches/'
   if (id === 'aiprod' || id === 'aiqa' || id === 'aiuat' || id === 'hangfire') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
   if (id === 'cidev') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
-  if (id === 'deploy') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/branches/?query=release'
   if (id === 'reviews') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pull-requests/?state=OPEN&reviewer=me'
   if (id === 'merged') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/commits/branch/development'
   return undefined
@@ -336,7 +363,6 @@ async function poll($, id, force) {
         setLight('drift', driftLight(undefined), now)
         setLight('merged', mergedLight(undefined), now)
         setLight('ship', shipLight(undefined), now)
-        setLight('deploy', deployLight(undefined, now), now)
       } else {
         const git = async (args, timeoutMs = 30_000) => {
           const r = await $.process.run(['git', '-C', repoRoot, ...args], { timeoutMs })
@@ -445,8 +471,8 @@ function alertOnRed($, id, was, label) {
   if (was && was !== COLORS.red && l?.color === COLORS.red) $.ui.toast('Dragon: ' + label + '. ' + l.short)
 }
 
-// Release branches are the nearest thing to a deploy marker git has. The branch each poll saw last time is kept
-// in $.store, so a move shows what it brought (tickets for prod, commit count for next) and is toasted once.
+// Release branches are the nearest thing to a deploy marker git has. The commit each poll saw last time is kept
+// in $.store, so a move of release/prod is toasted once with the tickets it brought (the Prod light shows the current version).
 async function trackDeploys($, { prod, next, git, subjects, now }) {
   const sha = async (ref) => (ref ? (await git(['rev-parse', ref]))?.trim() : undefined)
   const [prodSha, nextSha] = [await sha(prod), await sha(next)]
@@ -466,7 +492,6 @@ async function trackDeploys($, { prod, next, git, subjects, now }) {
   seen.prodSha = prodSha
   seen.nextSha = nextSha
   await $.store.set('deploy:seen', seen)
-  setLight('deploy', deployLight(seen, now), now)
 }
 
 // twg lists every open PR you are a reviewer on, approved or not, so drop the ones you already approved.
@@ -777,7 +802,19 @@ async function refreshContext($, { turnEnded } = {}) {
     await $.store.set('session-beats', beats)
     setLight('sessions', sessionsLight(Object.keys(beats).length), now)
     setLight('ctx', ctxLight(session.contextPct), now)
-    setLight('day', dayLight(day), now)
+    dayPart = dayLight(day)
+    setLight('cost', costLight(dayPart, monthPart), now)
+    lastRateLimits = u?.rateLimits
+    // Which reply the cache clock counts from is kept per session in the store, so a reload does not turn it cold
+    const replies = (await $.store.get('cache-replies')) ?? {}
+    const replyKey = String(u?.startedAt ?? 'unknown')
+    if (turnEnded) {
+      const next = { ...replies, [replyKey]: now }
+      await $.store.set('cache-replies', Object.fromEntries(Object.keys(next).sort().slice(-40).map((k) => [k, next[k]])))
+      lastReplyAt = now
+    } else if (lastReplyAt === undefined) lastReplyAt = replies[replyKey]
+    syncCache($)
+    refreshMonth($)
 
     if (!startBranch && lights.git?.branch) startBranch = lights.git.branch
     const advice = tokenAdvice({
@@ -819,6 +856,60 @@ async function refreshContext($, { turnEnded } = {}) {
   }
 }
 
+// The cache light is a countdown: re-read every 30s, every second in the last two minutes, and not at all while the dragon sleeps
+function syncCache($) {
+  const now = Date.now()
+  const running = session.state !== 'idle' && session.state !== 'error'
+  setLight('cache', cacheLight(lastReplyAt, now, running), now)
+  const left = typeof lastReplyAt === 'number' ? CACHE_TTL_MS - (now - lastReplyAt) : 0
+  const want = left > 0 && !running && !moodNow().asleep ? (left <= 120_000 ? 1000 : 30_000) : 0
+  if (want !== cacheEvery) {
+    cacheTimer?.cancel()
+    cacheTimer = want ? $.clock.every(want, () => syncCache($)) : null
+    cacheEvery = want
+  }
+  $.ui.invalidate('ui.render')
+}
+
+// Account spend this month, shared across sessions through the store; a 429 backs every session off together
+async function refreshMonth($, force) {
+  if (monthlyBusy) return
+  monthlyBusy = true
+  try {
+    const now = await $.clock.now()
+    const cached = (await $.store.get('monthly-cache')) ?? undefined
+    if (cached?.reading) monthlyReading = cached.reading
+    const fresh = cached && (now < (cached.backoffUntil ?? 0) || (cached.reading && now - cached.fetchedAt < MONTHLY_REFRESH_MS))
+    if (!force && fresh) {
+      monthlyError = cached.reading ? '' : 'rate limited, retrying later'
+    } else {
+      const auth = await $.session.authorize()
+      if (!auth) monthlyError = 'not signed in'
+      else {
+        const r = await $.http.fetch(USAGE_URL, { auth: auth.handle, headers: { 'anthropic-beta': 'oauth-2025-04-20' } })
+        if (r.ok) {
+          const reading = parseMonthly(r.text)
+          monthlyReading = reading
+          monthlyError = reading ? '' : 'no monthly spend limit on this account'
+          await $.store.set('monthly-cache', { reading: reading ?? null, fetchedAt: now, backoffUntil: 0 })
+        } else {
+          monthlyError = 'HTTP ' + r.status
+          if (r.status === 429) await $.store.set('monthly-cache', { reading: cached?.reading ?? null, fetchedAt: cached?.fetchedAt ?? 0, backoffUntil: now + MONTHLY_BACKOFF_MS })
+        }
+      }
+    }
+    monthPart = monthLight(monthlyReading, lastRateLimits, monthlyError, now)
+    setLight('cost', costLight(dayPart, monthPart), now)
+  } catch (err) {
+    monthlyError = shorten(err?.message ?? err, 50)
+    monthPart = monthLight(monthlyReading, lastRateLimits, monthlyError, Date.now())
+    setLight('cost', costLight(dayPart, monthPart), Date.now())
+  } finally {
+    monthlyBusy = false
+    $.ui.invalidate('ui.render')
+  }
+}
+
 async function loadSkills($) {
   try {
     skills = indexSkills(await $.command.list(), $.plugin.name)
@@ -848,6 +939,7 @@ function setState($, state, tool) {
   session.state = state
   session.tool = tool ?? ''
   syncFlap($)
+  syncCache($)
 }
 
 // Any change to the prompt box (a keystroke, or dictated text landing) counts as typing for a moment
@@ -874,6 +966,7 @@ function noteActivity($) {
   lastActivity = Date.now()
   if (wasSleepy) {
     wasSleepy = false
+    syncCache($)
     $.ui.invalidate('ui.render')
     // Polls were skipped while asleep: refresh anything past its interval (poll() skips lights that are still fresh)
     for (const id of POLL_IDS) poll($, id)
@@ -889,12 +982,13 @@ function checkSleepy($) {
   const asleep = moodNow().asleep
   if (asleep !== wasSleepy) {
     wasSleepy = asleep
+    syncCache($)
     $.ui.invalidate('ui.render')
   }
 }
 
 // Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
-const NOT_FOR_HEADLINE = new Set(['ship', 'day', 'deploy', 'aiqa', 'aiuat'])
+const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'aiuat'])
 const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.label, light: lights[s.id] })))
 
 function moodNow() {
@@ -1251,7 +1345,7 @@ export function register(on, options) {
       ],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'AI', 'Watch']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'AI', 'Ops']
     const nowMs = Date.now()
     const head = currentHeadline()
     const headlineRow = Text({
@@ -1332,16 +1426,11 @@ export function register(on, options) {
       ...SOURCES.map((s) => {
         const l = lights[s.id]
         // Jira and PRs list just the ticket and its status; the count is already on the light
-        if (l?.brief?.length) return { scope: 'drg-' + s.id, text: s.title + ': ' + l.brief.join('  ·  '), more: '' }
+        if (l?.brief?.length) return { scope: 'drg-' + s.id, text: s.title + ': ' + l.brief.join('  ·  '), more: clickHint(s.id, l) }
         return {
           scope: 'drg-' + s.id,
           text: s.title + ': ' + (l?.short ?? 'checking…') + (l ? '  (' + ago(l.checkedAt, now) + ')' : ''),
-          more:
-            s.id === 'drift' && l?.value?.startsWith('↓')
-              ? 'Click to correct the drift (merges origin/development into ' + (lights.git?.branch ?? 'your branch') + ', asks first)'
-              : lightUrl(s.id)
-                ? 'Click to open'
-                : '',
+          more: clickHint(s.id, l),
         }
       }),
     ]

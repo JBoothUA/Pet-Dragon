@@ -12,9 +12,12 @@ import {
   prLight,
   seqLight,
   aiHealthLight,
+  costLight,
+  cacheLight,
+  parseMonthly,
+  monthLight,
   teamCiLight,
   hangfireLight,
-  deployLight,
   radarLight,
   meetLight,
   shouldRemindMeeting,
@@ -703,18 +706,6 @@ test('hangfireLight sums job errors across environments', () => {
   expect(hangfireLight({ prod: { error: 'x' } }).value).toBe('?')
 })
 
-test('deployLight is news for a day after a release branch moves', () => {
-  const now = Date.parse('2026-11-18T12:00:00Z')
-  const moved = deployLight({ prodRef: 'origin/release/prod/26.11.2', prodAt: now - 2 * 3_600_000, prodTickets: ['C3-100', 'C3-101'] }, now)
-  expect(moved.color).toBe('#ffc107')
-  expect(moved.short).toContain('C3-100, C3-101')
-  const old = deployLight({ prodRef: 'origin/release/prod/26.11.2', prodAt: now - 3 * 86_400_000 }, now)
-  expect(old.color).toBe('#3ddc84')
-  const next = deployLight({ prodRef: 'origin/release/prod/26.11.2', nextRef: 'origin/release/next/26.12.0', nextNew: 4, nextAt: now - 3_600_000 }, now)
-  expect(next.value).toBe('next +4')
-  expect(deployLight(undefined, now).value).toBe('?')
-})
-
 test('teamCiLight judges pipelines as a team, not one PR', () => {
   const run = (n, result) => ({ build_number: n, state: { name: 'COMPLETED', result: { name: result } }, target: { source: 'feat/C3-' + n, destination: 'development' } })
   const ok = Array.from({ length: 8 }, (_, i) => run(100 - i, 'SUCCESSFUL'))
@@ -726,4 +717,48 @@ test('teamCiLight judges pipelines as a team, not one PR', () => {
   expect(bad.detail.length).toBe(4)
   expect(teamCiLight([run(1, 'FAILED')], 'a/b').value).toBe('quiet')
   expect(teamCiLight(undefined, 'a/b').value).toBe('?')
+})
+
+test('cacheLight counts down an hour from the last reply', () => {
+  const now = 10_000_000
+  expect(cacheLight(undefined, now, false).value).toBe('cold')
+  expect(cacheLight(now - 61 * 60_000, now, false).value).toBe('cold')
+  const warm = cacheLight(now - 18 * 60_000, now, false)
+  expect(warm.value).toBe('42m')
+  expect(warm.color).toBe('#ffb347')
+  const expiring = cacheLight(now - (60 * 60_000 - 105_000), now, false)
+  expect(expiring.value).toBe('1:45')
+  expect(expiring.color).toBe('#ff5252')
+  expect(cacheLight(now - 18 * 60_000, now, true).value).toBe('busy')
+})
+
+test('monthLight shows account spend, or plan windows when there is no monthly limit', () => {
+  const m = parseMonthly(JSON.stringify({ spend: { used: { amount_minor: 12800, currency: 'USD', exponent: 2 }, limit: { amount_minor: 150000 } } }))
+  expect(m.usedMinor).toBe(12800)
+  const l = monthLight(m, [], '', 0)
+  expect(l.value).toBe('$128/$1,500')
+  expect(l.color).toBe('#3ddc84')
+  expect(l.short).toContain('$1,372 left')
+  expect(monthLight({ ...m, usedMinor: 140000 }, [], '', 0).color).toBe('#ff5252')
+  expect(parseMonthly('{"spend":{}}')).toBeUndefined()
+  expect(parseMonthly('not json')).toBeUndefined()
+  const plan = monthLight(undefined, [{ kind: 'five_hour', percentUsed: 23 }, { kind: 'seven_day', percentUsed: 41, resetsAt: '2026-11-21T00:00:00Z' }], '', Date.parse('2026-11-18T00:00:00Z'))
+  expect(plan.value).toBe('Week 41%')
+  expect(plan.short).toContain('resets in 3d 0h')
+  expect(monthLight(undefined, [], 'HTTP 429', 0).short).toContain('HTTP 429')
+})
+
+test('costLight puts today and the month in one light, colored by the worse', () => {
+  const day = { color: '#3ddc84', value: '$4.20/$15.00', short: 'Spent $4.20 of $15.00 today', detail: ['d'] }
+  const month = { color: '#ffc107', value: '$1,100/$1,500', short: 'Account spend this month', detail: ['m'] }
+  const both = costLight(day, month)
+  expect(both.value).toBe('$4.20/$15.00 \u00b7 $1,100/$1,500')
+  expect(both.color).toBe('#ffc107')
+  expect(both.short).toContain('Today:')
+  expect(both.short).toContain('Month:')
+  expect(both.detail).toEqual(['d', 'm'])
+  // a month that is not known yet does not turn the light grey
+  expect(costLight(day, { color: '#8a8a8a', value: '?', short: 'x', detail: [] }).color).toBe('#3ddc84')
+  expect(costLight(day, undefined).value).toBe('$4.20/$15.00')
+  expect(costLight(undefined, undefined).value).toBe('?')
 })

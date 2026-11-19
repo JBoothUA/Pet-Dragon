@@ -497,20 +497,95 @@ export function hangfireLight(envs) {
   return { color: prod || total >= 5 ? COLORS.red : COLORS.amber, value: total + ' err', short: total + ' Hangfire job error(s) in the last 6 hours (' + bad.map(([e]) => e.toUpperCase()).join(', ') + ')', detail }
 }
 
-// seen: { prodRef, prodAt, prodTickets, nextRef, nextAt, nextNew } kept between polls (see deployState in register.js)
-// A release branch that moved is news for a day, then it is just the way things are
-export function deployLight(seen, nowMs) {
-  if (!seen?.prodRef) return { color: COLORS.grey, value: '?', short: 'No release/prod branch found to track', detail: [] }
-  const short = (ref) => String(ref).replace(/^origin\/release\/(prod|next)\//, '')
-  const fresh = (at) => typeof at === 'number' && nowMs - at < 24 * 3_600_000
-  const detail = []
-  const tickets = (seen.prodTickets ?? []).join(', ')
-  detail.push('Prod: ' + short(seen.prodRef) + (seen.prodAt ? ' (new ' + ago(seen.prodAt, nowMs) + ')' : ''))
-  if (tickets) detail.push('Shipped to prod: ' + tickets)
-  if (seen.nextRef) detail.push('Next: ' + short(seen.nextRef) + (seen.nextNew ? ' (+' + seen.nextNew + ' new commit(s) ' + (seen.nextAt ? ago(seen.nextAt, nowMs) : '') + ')' : ''))
-  if (fresh(seen.prodAt)) return { color: COLORS.amber, value: 'prod ' + short(seen.prodRef), short: 'release/prod moved to ' + short(seen.prodRef) + ' ' + ago(seen.prodAt, nowMs) + (tickets ? ': ' + tickets : ''), detail }
-  if (fresh(seen.nextAt) && seen.nextNew) return { color: COLORS.teal, value: 'next +' + seen.nextNew, short: 'release/next ' + short(seen.nextRef) + ' got ' + seen.nextNew + ' new commit(s) ' + ago(seen.nextAt, nowMs), detail }
-  return { color: COLORS.green, value: short(seen.prodRef), short: 'release/prod is on ' + short(seen.prodRef) + ' (no release branch movement in the last day)', detail }
+// ---- Prompt cache and account spend (ported from the session-hud-cli mod) ----
+
+// The cache lifetime is not reported per response: this session's requests use the 1-hour TTL, and a session in usage overage drops to 5 minutes
+export const CACHE_TTL_MS = 60 * 60 * 1000
+const clock = (ms) => {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0')
+}
+
+// lastAt: when the main agent last finished a reply; running: a turn is in flight (the reply refreshes the cache again)
+export function cacheLight(lastAt, nowMs, running) {
+  const note = 'This is an estimate: Claude Code does not report the cache lifetime, and a session in usage overage can drop to 5 minutes. Do not send filler messages to keep it warm.'
+  if (running) return { color: COLORS.working, value: 'busy', short: 'A turn is running; the prompt cache refreshes when it finishes', detail: [note] }
+  const left = typeof lastAt === 'number' ? CACHE_TTL_MS - (nowMs - lastAt) : 0
+  if (!(left > 0)) return { color: COLORS.tool, value: 'cold', short: typeof lastAt === 'number' ? 'The prompt cache has probably expired (over an hour since the last reply): the next message re-reads the whole context at full price' : 'No reply seen in this session yet, so the prompt cache is cold', detail: [note] }
+  if (left <= 120_000) return { color: COLORS.red, value: clock(left), short: 'Prompt cache expires in ' + clock(left) + ': send the next message now to keep it warm, or the context is re-read at full price', detail: [note] }
+  return { color: COLORS.ember, value: Math.ceil(left / 60_000) + 'm', short: 'Prompt cache is warm for about ' + Math.ceil(left / 60_000) + ' more minute(s) (last reply ' + ago(lastAt, nowMs) + ')', detail: [note] }
+}
+
+// The account usage card's reply: { spend: { used: { amount_minor, currency, exponent }, limit: { amount_minor } } }, or undefined with no spend limit
+export function parseMonthly(text) {
+  let body
+  try {
+    body = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  const used = body?.spend?.used
+  const limit = body?.spend?.limit
+  if (typeof used?.amount_minor !== 'number' || typeof limit?.amount_minor !== 'number' || limit.amount_minor <= 0) return undefined
+  return { usedMinor: used.amount_minor, limitMinor: limit.amount_minor, exponent: used.exponent ?? 2, currency: used.currency ?? 'USD' }
+}
+
+export function money(minor, exponent, currency) {
+  const value = minor / 10 ** exponent
+  try {
+    return value.toLocaleString('en-US', { style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 0 })
+  } catch {
+    return value.toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' ' + currency
+  }
+}
+
+const resetIn = (resetsAt, nowMs) => {
+  const ms = resetsAt ? Date.parse(resetsAt) - nowMs : NaN
+  if (!Number.isFinite(ms)) return ''
+  const minutes = Math.max(0, Math.round(ms / 60000))
+  const days = Math.floor(minutes / 1440)
+  const hours = Math.floor((minutes % 1440) / 60)
+  return days > 0 ? days + 'd ' + hours + 'h' : hours > 0 ? hours + 'h ' + (minutes % 60) + 'm' : minutes + 'm'
+}
+
+// m: parseMonthly's reading. limits: $.session.usage().rateLimits, shown instead on a subscription with no monthly spend limit.
+// err: why the last fetch gave no reading
+export function monthLight(m, limits, err, nowMs) {
+  const zone = (pct) => (pct >= 90 ? COLORS.red : pct >= 70 ? COLORS.amber : COLORS.green)
+  if (m) {
+    const pct = (100 * m.usedMinor) / m.limitMinor
+    const used = money(m.usedMinor, m.exponent, m.currency)
+    const cap = money(m.limitMinor, m.exponent, m.currency)
+    const left = money(Math.max(0, m.limitMinor - m.usedMinor), m.exponent, m.currency)
+    return { color: zone(pct), value: used + '/' + cap, short: 'Account spend this month: ' + used + ' of ' + cap + ' (' + Math.round(pct) + '%), ' + left + ' left', detail: ['This is the account-wide figure from the usage card, not just this machine.'] }
+  }
+  const windows = [
+    { kind: 'five_hour', label: '5h' },
+    { kind: 'seven_day', label: 'Week' },
+  ].flatMap((w) => {
+    const l = (limits ?? []).find((x) => x.kind === w.kind)
+    return l ? [{ ...w, pct: l.percentUsed, reset: resetIn(l.resetsAt, nowMs) }] : []
+  })
+  if (windows.length) {
+    const top = windows.reduce((a, b) => (b.pct > a.pct ? b : a))
+    return { color: zone(top.pct), value: top.label + ' ' + Math.round(top.pct) + '%', short: 'No monthly spend limit on this account; plan windows: ' + windows.map((w) => w.label + ' ' + Math.round(w.pct) + '%' + (w.reset ? ' (resets in ' + w.reset + ')' : '')).join(', '), detail: [] }
+  }
+  return { color: COLORS.grey, value: '?', short: 'Monthly spend is not known' + (err ? ' (' + err + ')' : ''), detail: [] }
+}
+
+// One Cost light for both spend figures: today against the daily limit, and the account's month against its monthly limit.
+// The color is the worse of the two; a figure that is not known yet is left out rather than turning the light grey.
+export function costLight(day, month) {
+  const known = [day, month].filter((l) => l && l.value !== '?')
+  if (known.length === 0) return { color: COLORS.grey, value: '?', short: 'Spend is not known yet', detail: [] }
+  const rank = (c) => (c === COLORS.red ? 3 : c === COLORS.amber ? 2 : 1)
+  const worst = known.reduce((a, b) => (rank(b.color) > rank(a.color) ? b : a))
+  return {
+    color: worst.color,
+    value: known.map((l) => l.value).join(' \u00b7 '),
+    short: (day ? 'Today: ' + day.short : '') + (day && month ? '  |  ' : '') + (month ? 'Month: ' + month.short : ''),
+    detail: known.flatMap((l) => l.detail ?? []),
+  }
 }
 
 // ---- Token coach ----
