@@ -585,6 +585,8 @@ export function costLight(day, month) {
     value: known.map((l) => l.value).join(' \u00b7 '),
     short: (day ? 'Today: ' + day.short : '') + (day && month ? '  |  ' : '') + (month ? 'Month: ' + month.short : ''),
     detail: known.flatMap((l) => l.detail ?? []),
+    // The figures one by one, so the band can set them in two columns with the dot between
+    parts: known.map((l) => l.value),
   }
 }
 

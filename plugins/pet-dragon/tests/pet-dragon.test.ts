@@ -246,8 +246,8 @@ test('the repo row shows git, pipeline and Seq lights after the first polls', as
 
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Text', text: /Git: feat\/C3-1-thing: 2 uncommitted, 2 to push/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Pipelines: Latest pipeline #3115 on feat\/C3-1-thing passed/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /Seq errors: 1 error\(s\) in Seq/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Pipeline for your branch: Latest pipeline #3115 on feat\/C3-1-thing passed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Seq errors \(local\): 1 error\(s\) in Seq/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Backend tests .*: No backend test run recorded yet/ })).toBeDefined()
   await ui.unmount()
 })

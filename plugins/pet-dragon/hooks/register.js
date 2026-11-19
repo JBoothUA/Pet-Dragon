@@ -111,35 +111,35 @@ const DEFAULTS = {
 
 // row 0 = local services, row 1 = work. A companion light is checked by its parent's probe.
 const SOURCES = [
-  { id: 'coreapi', label: 'Core', title: 'CoreAPI', row: 0 },
-  { id: 'bff', label: 'BFF', title: 'BFF', row: 0, parent: 'coreapi' },
-  { id: 'movedocs', label: 'MD', title: 'MoveDocs API', row: 0, parent: 'coreapi' },
-  { id: 'ui', label: 'UI', title: 'phoenix-ui dev server', row: 0, parent: 'coreapi' },
-  { id: 'jira', label: 'Jira', title: 'Jira', row: 1 },
-  { id: 'bitbucket', label: 'PRs', title: 'PRs', row: 1 },
-  { id: 'reviews', label: 'Review', title: 'PRs to review', row: 1, parent: 'bitbucket' },
-  { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1 },
-  { id: 'meet', label: 'Mtgs', title: 'Meetings today', row: 1, parent: 'outlook' },
-  { id: 'teams', label: 'Teams', title: 'Teams', row: 1, parent: 'outlook' },
-  { id: 'git', label: 'Git', title: 'Git', row: 2 },
-  { id: 'pipeline', label: 'CI', title: 'Pipelines', row: 2 },
-  { id: 'tests', label: 'BE Tests', title: 'Backend tests (C#)', row: 2 },
-  { id: 'fe-tests', label: 'FE Tests', title: 'Frontend tests (Jest)', row: 2 },
-  { id: 'seq', label: 'Logs', title: 'Seq errors', row: 2 },
-  { id: 'radar', label: 'Prod', title: 'Release radar', row: 3 },
-  { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, parent: 'radar' },
-  { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, parent: 'radar' },
-  { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, parent: 'radar' },
-  { id: 'aiprod', label: 'Prod Err', title: 'Production errors (App Insights)', row: 5 },
-  { id: 'aiqa', label: 'QA Err', title: 'QA errors (App Insights)', row: 5, parent: 'aiprod' },
-  { id: 'aiuat', label: 'UAT Err', title: 'UAT errors (App Insights)', row: 5, parent: 'aiprod' },
-  { id: 'hangfire', label: 'Jobs', title: 'Hangfire job errors', row: 5, parent: 'aiprod' },
-  { id: 'cidev', label: 'Team CI', title: 'Pipelines across every open and recent PR', row: 5 },
-  { id: 'cache', label: 'Cache', title: 'Prompt cache', row: 4 },
-  { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4 },
-  { id: 'cost', label: 'Cost', title: 'Spend today and this month', row: 4 },
-  { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4 },
-  { id: 'tree', label: 'Tree', title: 'Worktrees', row: 4, parent: 'git' },
+  { id: 'coreapi', label: 'Core', title: 'CoreAPI', row: 0, col: 0 },
+  { id: 'bff', label: 'BFF', title: 'BFF', row: 0, col: 1, parent: 'coreapi' },
+  { id: 'movedocs', label: 'MD', title: 'MoveDocs API', row: 0, col: 2, parent: 'coreapi' },
+  { id: 'ui', label: 'UI', title: 'phoenix-ui dev server', row: 0, col: 3, parent: 'coreapi' },
+  { id: 'jira', label: 'Jira', title: 'Jira', row: 1, col: 0 },
+  { id: 'bitbucket', label: 'PRs', title: 'PRs', row: 1, col: 1 },
+  { id: 'reviews', label: 'Review', title: 'PRs to review', row: 1, col: 2, parent: 'bitbucket' },
+  { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1, col: 3 },
+  { id: 'meet', label: 'Mtgs', title: 'Meetings today', row: 1, col: 4, parent: 'outlook' },
+  { id: 'teams', label: 'Teams', title: 'Teams', row: 1, col: 5, parent: 'outlook' },
+  { id: 'git', label: 'Git', title: 'Git', row: 2, col: 0 },
+  { id: 'pipeline', label: 'CI', title: 'Pipeline for your branch', row: 2, col: 1 },
+  { id: 'cidev', label: 'Team', title: 'Pipelines across every open and recent PR', hl: 'Team CI', row: 2, col: 2 },
+  { id: 'tests', label: 'BE Tests', title: 'Backend tests (C#)', row: 2, col: 3 },
+  { id: 'fe-tests', label: 'FE Tests', title: 'Frontend tests (Jest)', row: 2, col: 4 },
+  { id: 'tree', label: 'Tree', title: 'Worktrees', row: 2, col: 5, parent: 'git' },
+  { id: 'radar', label: 'Prod', title: 'Release radar', row: 3, col: 0 },
+  { id: 'drift', label: 'Drift', title: 'Branch drift', row: 3, col: 1, parent: 'radar' },
+  { id: 'merged', label: 'Merged', title: 'Merged into development today', row: 3, col: 2, parent: 'radar' },
+  { id: 'ship', label: 'Ship', title: 'Next release in Jira', row: 3, col: 3, parent: 'radar' },
+  { id: 'cache', label: 'Cache', title: 'Prompt cache', row: 4, col: 0 },
+  { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4, col: 1 },
+  { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4, col: 2 },
+  { id: 'cost', label: 'Cost', title: 'Spend today and this month', row: 4, col: 3 },
+  { id: 'seq', label: 'Logs', title: 'Seq errors (local)', row: 5, col: 0 },
+  { id: 'aiprod', label: 'Prod', title: 'Production errors (App Insights)', hl: 'Prod errors', row: 5, col: 1 },
+  { id: 'aiqa', label: 'QA', title: 'QA errors (App Insights)', hl: 'QA errors', row: 5, col: 2, parent: 'aiprod' },
+  { id: 'aiuat', label: 'UAT', title: 'UAT errors (App Insights)', hl: 'UAT errors', row: 5, col: 3, parent: 'aiprod' },
+  { id: 'hangfire', label: 'Jobs', title: 'Hangfire job errors', row: 5, col: 4, parent: 'aiprod' },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
@@ -989,7 +989,7 @@ function checkSleepy($) {
 
 // Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
 const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'aiuat'])
-const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.label, light: lights[s.id] })))
+const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.hl ?? s.label, light: lights[s.id] })))
 
 function moodNow() {
   const key = pickMood({
@@ -1319,12 +1319,11 @@ export function register(on, options) {
       ),
     })
 
-    const ctx = typeof session.contextPct === 'number' ? '  ctx ' + Math.round(session.contextPct) + '%' : ''
     const captionText = Text({
       wrap: 'truncate-end',
       children: [
         Text({ color: mood.color, bold: true, hover: { scope: 'drg-mood' }, children: ['\u25cf ' + mood.label] }),
-        Text({ dimColor: true, children: [' \u2014 ' + mood.short + ctx] }),
+        Text({ dimColor: true, children: [' \u2014 ' + mood.short] }),
       ],
     })
     // The Standup button sits at the end of the caption row; pressing it opens /dragon with the standup in it
@@ -1345,7 +1344,7 @@ export function register(on, options) {
       ],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Prod', 'AI', 'Ops']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Rel', 'AI', 'Errs']
     const nowMs = Date.now()
     const head = currentHeadline()
     const headlineRow = Text({
@@ -1353,16 +1352,44 @@ export function register(on, options) {
       wrap: 'truncate-end',
       children: [Text({ color: head.color, bold: true, children: ['\u25cf '] }), Text({ color: head.level === 'green' ? head.color : undefined, bold: head.level !== 'green', children: [head.text] })],
     })
+    // Columns line up down the band when they fit beside the dragon; otherwise each row is as long as it needs to be
+    // The Cost light's two figures sit in two columns, today in its own and the month in the next, with the dot between
+    const spans = (src) => src.id === 'cost' && (lights.cost?.parts?.length ?? 0) > 1
+    const cellLen = (src) => 2 + src.label.length + 1 + String(lights[src.id]?.value ?? '\u2026').length
+    const COL_GAP = 2
+    const LABEL_W = 6
+    const colW = []
+    const widen = (c, n) => (colW[c] = Math.max(colW[c] ?? 0, n))
+    for (const src of SOURCES) {
+      if (spans(src)) {
+        widen(src.col, 2 + src.label.length + 1 + String(lights.cost.parts[0]).length)
+        widen(src.col + 1, 2 + String(lights.cost.parts[1]).length)
+      } else widen(src.col, cellLen(src))
+    }
+    const aligned = LABEL_W + colW.reduce((sum, w) => sum + (w ?? 0) + COL_GAP, 0) - COL_GAP <= width
+    const cellsFor = (row, build) => {
+      const mine = SOURCES.filter((src) => src.row === row)
+      if (!aligned || mine.length === 0) return mine.map((src) => build(src))
+      const last = Math.max(...mine.map((src) => src.col + (spans(src) ? 1 : 0)))
+      const cells = []
+      for (let c = 0; c <= last; c++) {
+        const src = mine.find((m) => m.col === c)
+        const head = src ? build(src, spans(src) ? 'head' : undefined) : undefined
+        const tailOf = mine.find((m) => spans(m) && m.col + 1 === c)
+        cells.push(Box({ key: 'drg-cell-' + row + '-' + c, width: (colW[c] ?? 0) + COL_GAP, children: [head ?? (tailOf ? build(tailOf, 'tail') : Text({ children: [' '] }))] }))
+      }
+      return cells
+    }
     const lightRow = (row) =>
       Box({
         key: 'drg-row-' + row,
         flexDirection: 'row',
-        columnGap: 2,
+        columnGap: aligned ? 0 : 2,
         children: [
           row === 0
-            ? Button({ key: 'drg-row-label-0', plain: true, hover: { scope: 'drg-apis', underline: true }, onPress: () => startApis($), children: [Text({ dimColor: true, children: [ROW_LABELS[0].padEnd(4)] })] })
-            : Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(4)] }),
-          ...SOURCES.filter((s) => s.row === row && !(s.id === 'seq' && lights.seq?.value === 'off')).map((s) => {
+            ? Button({ key: 'drg-row-label-0', plain: true, hover: { scope: 'drg-apis', underline: true }, onPress: () => startApis($), children: [Text({ dimColor: true, children: [ROW_LABELS[0].padEnd(aligned ? LABEL_W : 4)] })] })
+            : Text({ key: 'drg-row-label-' + row, dimColor: true, children: [ROW_LABELS[row].padEnd(aligned ? LABEL_W : 4)] }),
+          ...cellsFor(row, (s, part) => {
             const l = lights[s.id]
             const color = l?.color ?? COLORS.grey
             const open = async () => {
@@ -1401,6 +1428,19 @@ export function register(on, options) {
             }
             // A light whose value just changed flashes: a filled dot and a highlighted value on every other step
             const flash = pulseBright(l, nowMs)
+            if (part) {
+              const figures = lights.cost.parts
+              return Button({
+                key: 'drg-light-' + s.id + '-' + part,
+                plain: true,
+                hover: { scope: 'drg-' + s.id, underline: true },
+                onPress: open,
+                children:
+                  part === 'head'
+                    ? [Text({ color, children: [flash ? '\u25c9 ' : '\u25cf '] }), Text({ children: [s.label + ' '] }), Text({ color: flash ? '#111111' : color, backgroundColor: flash ? color : undefined, bold: true, children: [figures[0]] })]
+                    : [Text({ dimColor: true, children: ['\u00b7 '] }), Text({ color: flash ? '#111111' : color, backgroundColor: flash ? color : undefined, bold: true, children: [figures[1]] })],
+              })
+            }
             return Button({
               key: 'drg-light-' + s.id,
               plain: true,
@@ -1466,7 +1506,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(2), lightRow(3), lightRow(5), lightRow(4), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(2), lightRow(5), lightRow(4), lightRow(3), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
