@@ -1306,7 +1306,7 @@ export function register(on, options) {
       // The light rows make the band taller than the sprite: sit it in the middle of them instead of at the top.
       // alignSelf: 'center' rounds the odd leftover row down onto the bottom, one row too low, so the offset is explicit.
       alignSelf: 'flex-start',
-      marginTop: 2,
+      marginTop: 1,
       width: SPRITE_WIDTH + 1,
       hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>
@@ -1326,31 +1326,31 @@ export function register(on, options) {
         Text({ dimColor: true, children: [' \u2014 ' + mood.short] }),
       ],
     })
-    // The Standup button sits at the end of the caption row; pressing it opens /dragon with the standup in it
-    const caption = Box({
-      key: 'drg-caption',
-      flexDirection: 'row',
-      columnGap: 2,
-      children: [
-        captionText,
-        Button({
-          key: 'drg-standup-band',
-          plain: true,
-          hover: { scope: 'drg-standup', underline: true },
-          // A plugin cannot run its own command or submit a leading-slash prompt, so print into the chat directly
-          onPress: () => printStandup($),
-          children: [Text({ color: COLORS.ember, bold: true, children: ['[ Standup ]'] })],
-        }),
-      ],
+    const caption = Box({ key: 'drg-caption', flexDirection: 'row', children: [captionText] })
+    // The Standup button sits at the end of the headline row (the second line); pressing it prints the standup into the chat
+    const standupButton = Button({
+      key: 'drg-standup-band',
+      plain: true,
+      hover: { scope: 'drg-standup', underline: true },
+      // A plugin cannot run its own command or submit a leading-slash prompt, so print into the chat directly
+      onPress: () => printStandup($),
+      children: [Text({ color: COLORS.ember, bold: true, children: ['[ Standup ]'] })],
     })
 
     const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Rel', 'AI', 'Errs']
     const nowMs = Date.now()
     const head = currentHeadline()
-    const headlineRow = Text({
+    const headlineRow = Box({
       key: 'drg-headline',
-      wrap: 'truncate-end',
-      children: [Text({ color: head.color, bold: true, children: ['\u25cf '] }), Text({ color: head.level === 'green' ? head.color : undefined, bold: head.level !== 'green', children: [head.text] })],
+      flexDirection: 'row',
+      columnGap: 2,
+      children: [
+        Text({
+          wrap: 'truncate-end',
+          children: [Text({ color: head.color, bold: true, children: ['\u25cf '] }), Text({ color: head.level === 'green' ? head.color : undefined, bold: head.level !== 'green', children: [head.text] })],
+        }),
+        standupButton,
+      ],
     })
     // Columns line up down the band when they fit beside the dragon; otherwise each row is as long as it needs to be
     // The Cost light's two figures sit in two columns, today in its own and the month in the next, with the dot between
