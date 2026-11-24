@@ -26,6 +26,7 @@ import {
   aiHealthLight,
   depsLight,
   bugsLight,
+  bugsJql,
   blockedPrs,
   costLight,
   cacheLight,
@@ -35,6 +36,8 @@ import {
   teamCiLight,
   hangfireLight,
   seqLight,
+  diagnoseTestPart,
+  TEST_PROBLEM_VALUES,
   radarLight,
   releaseForecast,
   ctxLight,
@@ -84,7 +87,7 @@ const DEFAULTS = {
   messages_poll_seconds: 120,
   jira_poll_minutes: 5,
   bitbucket_poll_minutes: 10,
-  jira_jql: 'assignee = currentUser() AND statusCategory != Done',
+  jira_jql: 'assignee = currentUser() AND statusCategory != Done AND status NOT IN ("Dev Done", "Ready for Release")',
   context_warn_percent: 80,
   sleepy_after_minutes: 20,
   git_poll_seconds: 60,
@@ -97,6 +100,8 @@ const DEFAULTS = {
   ui_port: 5173,
   radar_poll_minutes: 10,
   ai_poll_minutes: 5,
+  // The Bugs light watches this pod's label only (pods are labels named C3Pod<N>); empty = every pod
+  bug_pod_label: 'C3Pod2',
   db_scripts_dir: '',
   auto_test_command: '',
   auto_fe_test_command: '',
@@ -141,10 +146,9 @@ const SOURCES = [
   { id: 'seq', label: 'Logs', title: 'Seq errors (local)', row: 5, col: 0 },
   { id: 'aiprod', label: 'Prod', title: 'Production errors (App Insights)', hl: 'Prod errors', row: 5, col: 1 },
   { id: 'aiqa', label: 'QA', title: 'QA errors (App Insights)', hl: 'QA errors', row: 5, col: 2, parent: 'aiprod' },
-  { id: 'aiuat', label: 'UAT', title: 'UAT errors (App Insights)', hl: 'UAT errors', row: 5, col: 3, parent: 'aiprod' },
-  { id: 'hangfire', label: 'Jobs', title: 'Hangfire job errors', row: 5, col: 4, parent: 'aiprod' },
-  { id: 'deps', label: 'Deps', title: 'Dependencies failing in prod, QA or UAT (App Insights)', row: 5, col: 5, parent: 'aiprod' },
-  { id: 'bugs', label: 'Bugs', title: 'New Jira bugs in the last 24 hours', row: 5, col: 6 },
+  { id: 'hangfire', label: 'Jobs', title: 'Hangfire job errors', row: 5, col: 3, parent: 'aiprod' },
+  { id: 'deps', label: 'Deps', title: 'Dependencies failing in prod, QA or UAT (App Insights)', row: 5, col: 4, parent: 'aiprod' },
+  { id: 'bugs', label: 'Bugs', title: 'New Jira bugs for the pod in the last 24 hours', row: 5, col: 5 },
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
@@ -235,13 +239,16 @@ function syncPulse($) {
   }
 }
 
+// A test light that has no complete result: a cause word (timeout, build, ...) or a count with parts missing
+const testNeedsRun = (l) => TEST_PROBLEM_VALUES.includes(l?.value) || l?.partial === true
+
 // What a click on a light does, for its hover line. Mirrors the `open` handler in the band: every light answers a click.
 function clickHint(id, l) {
   if (id === 'git' && (l?.value ?? '').includes('~')) return 'Click to review the uncommitted changes (asks before anything is reset)'
   if (id === 'git' && (l?.value ?? '').includes('↓')) return 'Click to merge origin into this branch (asks first)'
   if (id === 'drift' && l?.value?.startsWith('↓')) return 'Click to correct the drift (merges origin/development into ' + (lights.git?.branch ?? 'your branch') + ', asks first)'
-  if ((id === 'tests' || id === 'fe-tests') && l?.value === 'unclear') return 'Click to run all of them again'
-  if (id === 'cache') return 'Click to run /compact (asks what the summary should keep)'
+  if ((id === 'tests' || id === 'fe-tests') && testNeedsRun(l)) return 'Click to run the tests again'
+  if (id === 'cache' || id === 'ctx') return 'Click to run /compact (asks what the summary should keep)'
   if (lightUrl(id)) return 'Click to open'
   return 'Click for details in /dragon'
 }
@@ -258,7 +265,7 @@ function lightUrl(id) {
   if (id === 'seq') return opts.seq_url
   if (id === 'ui') return 'http://localhost:' + opts.ui_port
   if (id === 'radar') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/branches/'
-  if (id === 'aiprod' || id === 'aiqa' || id === 'aiuat' || id === 'hangfire' || id === 'deps') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
+  if (id === 'aiprod' || id === 'aiqa' || id === 'hangfire' || id === 'deps') return 'https://portal.azure.com/#view/HubsExtension/BrowseResource/resourceType/microsoft.insights%2Fcomponents'
   if (id === 'cidev') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pipelines'
   if (id === 'reviews') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/pull-requests/?state=OPEN&reviewer=me'
   if (id === 'merged') return 'https://bitbucket.org/' + opts.bitbucket_repo + '/commits/branch/development'
@@ -444,7 +451,6 @@ async function poll($, id, force) {
       const off = { color: COLORS.grey, value: '?', short: !isWindows ? 'App Insights checks need Windows' : envs?._error ?? 'App Insights could not be read', detail: [] }
       setLight('aiprod', bad ? off : aiHealthLight('prod', envs.prod), now)
       setLight('aiqa', bad ? off : aiHealthLight('qa', envs.qa), now)
-      setLight('aiuat', bad ? off : aiHealthLight('uat', envs.uat), now)
       setLight('hangfire', bad ? off : hangfireLight(envs), now)
       setLight('deps', bad ? off : depsLight(envs), now)
       alertOnRed($, 'aiprod', was, 'PRODUCTION')
@@ -457,9 +463,8 @@ async function poll($, id, force) {
       alertOnRed($, 'cidev', was, 'CI is failing across PRs')
     } else if (key === 'bugs') {
       const was = lights.bugs?.color
-      const jql = 'project in (C3, PHX) AND issuetype = Bug AND created >= -1d AND status not in (DISREGARD, COMPLETED) ORDER BY created DESC'
-      const r = await $.process.run(['twg', 'jira', 'workitem', 'query', '--jql', jql, '--limit', '30', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 90_000 })
-      setLight('bugs', bugsLight(r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined), now)
+      const r = await $.process.run(['twg', 'jira', 'workitem', 'query', '--jql', bugsJql(opts.bug_pod_label), '--limit', '30', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 90_000 })
+      setLight('bugs', bugsLight(r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined, opts.bug_pod_label), now)
       alertOnRed($, 'bugs', was, 'New urgent bug')
     } else if (key === 'seq') {
       const windowMin = Number(opts.seq_window_minutes)
@@ -705,9 +710,6 @@ async function autoTestPlan($, kind) {
   return { cwd: repoRoot + '/phoenix-ui', shown: 'npm run test, full suite in ' + FE_SHARDS + ' parts', parts }
 }
 
-// Parts already finished, kept for the second attempt so only the one that failed runs again
-const partTotals = {}
-
 // Tests never sit at "not run": when nothing is recorded for a kind in this repo, run it and record the result.
 // The two suites run one after the other (each light still tracks its own parts): side by side they doubled the load on the machine.
 const testBusy = {}
@@ -716,12 +718,38 @@ async function autoRunTests($) {
   for (const kind of ['be', 'fe']) await runTestKind($, kind, false)
 }
 
-// force: re-run even though the light says "unclear" (a click on it), not only when nothing is recorded.
-// A part that ends without a pass/fail summary is tried once more before the light gives up on it.
+// Runs one part to its end and returns { code, output, elapsedMs }. It is streamed with $.process.spawn, which has no ten-minute limit
+// (a single C# test project here takes up to twenty), and onProgress hears the newest output line while it runs.
+// Only the tail of the output is kept: the runner's summary line is the last thing it prints.
+const PART_CEILING_MS = 45 * 60_000
+async function runPart($, argv, cwd, onProgress) {
+  const startedAt = await $.clock.now()
+  let output = ''
+  let lastTick = 0
+  const stream = $.process.spawn({ argv, cwd })
+  for await (const piece of stream) {
+    output = (output + piece.text).slice(-200_000)
+    const now = await $.clock.now()
+    if (now - startedAt > PART_CEILING_MS) {
+      // Leaving the loop kills the child
+      return { code: null, output, elapsedMs: now - startedAt }
+    }
+    if (now - lastTick > 10_000) {
+      lastTick = now
+      const line = output.split('\n').map((l) => l.trim()).filter(Boolean).pop()
+      onProgress(now - startedAt, line ?? '')
+    }
+  }
+  const ended = await stream.result.catch(() => undefined)
+  return { code: ended?.code ?? null, output, elapsedMs: (await $.clock.now()) - startedAt }
+}
+
+// A part that finishes without a pass/fail summary is recorded with its cause and the run goes on to the next part, so one slow or
+// broken project no longer hides the result of the rest. force: re-run although the light shows a problem (a click on it).
 async function runTestKind($, kind, force) {
   const light = TEST_KINDS[kind].light
   const value = lights[light]?.value
-  if (testBusy[kind] || !(value === 'not run' || value === 'queued' || (force && value === 'unclear'))) return
+  if (testBusy[kind] || !(value === 'not run' || value === 'queued' || (force && testNeedsRun(lights[light])))) return
   testBusy[kind] = true
   try {
     const plan = await autoTestPlan($, kind)
@@ -731,41 +759,40 @@ async function runTestKind($, kind, force) {
       return
     }
     const count = plan.parts.length
-    for (const attempt of [1, 2]) {
-      let unclear
-      let tail = []
-      const total = attempt === 2 && partTotals[kind] ? partTotals[kind] : { passed: 0, failed: 0, next: 0 }
-      partTotals[kind] = total
-      try {
-        for (; total.next < count; total.next++) {
-          const part = plan.parts[total.next]
-          // The value is the running TOTAL, like the finished light; which part is running goes in the hover
-          const sofar = total.failed > 0 ? total.failed + ' fail…' : total.passed > 0 ? total.passed + ' pass…' : 'running'
-          const where = count > 1 ? 'Part ' + (total.next + 1) + ' of ' + count + ' (' + part.label + ') running; so far ' + total.passed + ' passed, ' + total.failed + ' failed. ' : ''
-          setLight(light, { color: total.failed > 0 ? COLORS.red : COLORS.working, value: sofar, short: where + (attempt === 2 ? 'A part gave no result, so Dragon is running it again. ' : 'No test run was recorded for this repo, so Dragon is running ' + plan.shown + '. '), detail: [] }, await $.clock.now())
-          $.ui.invalidate('ui.render')
-          const r = await $.process.run(part.argv, { cwd: plan.cwd, timeoutMs: 600_000 })
-          const output = [r.stdout, r.stderr].filter(Boolean).join('\n')
-          const run = parseTestRun(part.argv.join(' '), output)
-          if (run && testKind(run) === kind) {
-            total.passed += run.passed
-            total.failed += run.failed
-          } else if (kind === 'be' && /No test is available|no test source/i.test(output)) {
-            // A helper project that carries no tests adds nothing
-          } else {
-            // What the run actually said, so an unclear light explains itself on hover
-            tail = output.split('\n').map((l) => l.trim()).filter(Boolean).slice(-4).map((l) => shorten(l, 110))
-            throw new Error('Part ' + (total.next + 1) + ' of ' + count + ' (' + part.label + ', exit ' + r.exitCode + ') gave no pass/fail summary')
-          }
-        }
-        delete partTotals[kind]
-        await recordTestRun($, { runner: kind === 'be' ? 'dotnet' : 'jest', passed: total.passed, failed: total.failed }, plan.shown, await $.clock.now())
-        return
-      } catch (err) {
-        unclear = shorten(err?.message ?? err, 160)
+    const total = { passed: 0, failed: 0 }
+    const problems = []
+    for (let i = 0; i < count; i++) {
+      const part = plan.parts[i]
+      // The value is the running TOTAL, like the finished light; which part is running goes in the hover
+      const sofar = total.failed > 0 ? total.failed + ' fail…' : total.passed > 0 ? total.passed + ' pass…' : 'running'
+      const show = (elapsedMs, line) => {
+        const where = count > 1 ? 'Part ' + (i + 1) + ' of ' + count + ' (' + part.label + ') running' + (elapsedMs ? ' for ' + Math.round(elapsedMs / 60_000) + ' min' : '') + '; so far ' + total.passed + ' passed, ' + total.failed + ' failed' + (problems.length ? ', ' + problems.length + ' with no result' : '') + '. ' : ''
+        setLight(light, { color: total.failed > 0 ? COLORS.red : COLORS.working, value: sofar, short: where + 'No test run was recorded for this repo, so Dragon is running ' + plan.shown + '.', detail: line ? ['Latest output:', shorten(line, 110)] : [] }, Date.now())
+        $.ui.invalidate('ui.render')
       }
-      setLight(light, { color: COLORS.amber, value: 'unclear', short: unclear + '. Click this light to run it again', detail: tail.length ? ['Last output:', ...tail] : [] }, await $.clock.now())
+      show(0, '')
+      const r = await runPart($, part.argv, plan.cwd, show)
+      const run = parseTestRun(part.argv.join(' '), r.output)
+      if (run && testKind(run) === kind) {
+        total.passed += run.passed
+        total.failed += run.failed
+      } else if (kind === 'be' && /No test is available|no test source/i.test(r.output)) {
+        // A helper project that carries no tests adds nothing
+      } else {
+        const why = diagnoseTestPart(r.output, r.code, r.elapsedMs, PART_CEILING_MS)
+        problems.push({ label: part.label || 'run', value: why.value, why: why.why, line: why.line })
+      }
     }
+    if (problems.length === 0) {
+      await recordTestRun($, { runner: kind === 'be' ? 'dotnet' : 'jest', passed: total.passed, failed: total.failed }, plan.shown, await $.clock.now())
+      return
+    }
+    // Some parts gave no result. Anything that did fail is still the headline; otherwise show the count that is known, marked partial.
+    const names = problems.slice(0, 6).map((p) => p.label + ' (' + p.value + ')')
+    const detail = [total.passed + ' passed, ' + total.failed + ' failed in the ' + (count - problems.length) + ' parts that finished', ...problems.slice(0, 6).map((p) => p.label + ': ' + p.why + (p.line ? ' [' + shorten(p.line, 80) + ']' : ''))]
+    const say = problems.length + ' of ' + count + ' parts gave no result: ' + names.join(', ') + (problems.length > 6 ? ', …' : '') + '. Click this light to run again'
+    const headline = total.failed > 0 ? total.failed + ' fail' : total.passed > 0 ? total.passed + ' pass' : problems[0].value
+    setLight(light, { color: total.failed > 0 ? COLORS.red : COLORS.amber, value: headline, partial: true, short: (total.failed > 0 ? total.failed + ' failed, ' : '') + total.passed + ' passed; ' + say, detail }, await $.clock.now())
   } finally {
     testBusy[kind] = false
   }
@@ -1037,7 +1064,7 @@ function checkSleepy($) {
 }
 
 // Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
-const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'aiuat', 'bugs'])
+const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'bugs'])
 const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.hl ?? s.label, light: lights[s.id] })))
 
 function moodNow() {
@@ -1445,10 +1472,10 @@ export function register(on, options) {
             const open = async () => {
               if (s.id === 'git' && (await reviewChanges($))) return
               if ((s.id === 'git' || s.id === 'drift') && (await syncBehind($, s.id))) return
-              // An "unclear" test light has nothing worth opening: a click runs it again
+              // A test light that could not get a result has nothing worth opening: a click runs it again
               const kind = s.id === 'tests' ? 'be' : s.id === 'fe-tests' ? 'fe' : undefined
-              if (kind && l?.value === 'unclear') return runTestKind($, kind, true)
-              if (s.id === 'cache') return compactNow($)
+              if (kind && testNeedsRun(l)) return runTestKind($, kind, true)
+              if (s.id === 'cache' || s.id === 'ctx') return compactNow($)
               const url = lightUrl(s.id)
               if (url) openUrl($, url)
               else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })

@@ -14,6 +14,8 @@ import {
   aiHealthLight,
   depsLight,
   bugsLight,
+  bugsJql,
+  diagnoseTestPart,
   blockedPrs,
   costLight,
   cacheLight,
@@ -789,6 +791,13 @@ test('bugsLight counts new bugs and flags the urgent ones', () => {
   expect(hot.value).toBe('2!')
   expect(hot.short).toContain('C3-3')
   expect(bugsLight(undefined).value).toBe('?')
+  expect(bugsLight({ data: { issues: [] } }, 'C3Pod2').short).toContain('C3Pod2')
+})
+
+test('the Bugs query is limited to the pod label, or open to every pod when it is empty', () => {
+  expect(bugsJql('C3Pod2')).toContain('labels = "C3Pod2"')
+  expect(bugsJql('')).not.toContain('labels')
+  expect(bugsJql('C3Pod2')).toContain('created >= -1d')
 })
 
 test('a PR with a failing pipeline or no activity needs attention on the PRs light', () => {
@@ -809,4 +818,17 @@ test('a PR with a failing pipeline or no activity needs attention on the PRs lig
   expect(light.color).toBe('#ff5252')
   expect(light.brief[0]).toContain('pipeline failed')
   expect(prLight(json, 'r').value).toBe('3')
+})
+
+test('a test part with no summary names its cause instead of "unclear"', () => {
+  const limit = 600_000
+  expect(diagnoseTestPart('building...', 1, limit, limit).value).toBe('timeout')
+  expect(diagnoseTestPart('error MSB3027: Could not copy "a.dll". Exceeded retry count', 1, 5000, limit).value).toBe('locked')
+  expect(diagnoseTestPart('Foo.cs(3,1): error CS0103: The name x does not exist', 1, 5000, limit)).toMatchObject({ value: 'build', line: expect.stringContaining('CS0103') })
+  expect(diagnoseTestPart('FATAL ERROR: JavaScript heap out of memory', 134, 5000, limit).value).toBe('memory')
+  expect(diagnoseTestPart("Cannot find module 'react' from 'src/a.tsx'", 1, 5000, limit).value).toBe('deps')
+  expect(diagnoseTestPart('The active test run was aborted. Reason: Test host process crashed', 1, 5000, limit).value).toBe('crash')
+  const none = diagnoseTestPart('something odd', 3, 5000, limit)
+  expect(none.value).toBe('no result')
+  expect(none.why).toContain('exit 3')
 })

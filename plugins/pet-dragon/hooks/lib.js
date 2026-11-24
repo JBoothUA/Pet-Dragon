@@ -432,6 +432,26 @@ export function testKind(run) {
   return run?.runner === 'dotnet' ? 'be' : run?.runner === 'jest' ? 'fe' : undefined
 }
 
+// The values a test light shows when a run ended without a pass/fail count; a click on any of them runs the suite again
+export const TEST_PROBLEM_VALUES = ['timeout', 'locked', 'build', 'crash', 'memory', 'deps', 'no result']
+
+// Why a test part gave no pass/fail summary: { value, why, line } where value is one of TEST_PROBLEM_VALUES, why is a sentence, line the
+// output line that proves it. elapsedMs / timeoutMs: a part stopped by its time limit says nothing else, so the clock is the evidence.
+export function diagnoseTestPart(output, exitCode, elapsedMs, timeoutMs) {
+  const text = String(output ?? '')
+  const find = (re) => text.split('\n').map((l) => l.trim()).find((l) => re.test(l))
+  if (typeof elapsedMs === 'number' && typeof timeoutMs === 'number' && elapsedMs >= timeoutMs * 0.95) {
+    return { value: 'timeout', why: 'It ran past the ' + Math.round(timeoutMs / 60_000) + ' minute limit and was stopped (the project is too slow to finish in one go on this machine)' }
+  }
+  let line
+  if ((line = find(/MSB302[67]|being used by another process/i))) return { value: 'locked', why: 'The build could not overwrite a file another process holds. Stop the running APIs or tests and click to run again', line }
+  if ((line = find(/error CS\d+|error MSB\d+|Build FAILED/i))) return { value: 'build', why: 'The project did not compile', line }
+  if ((line = find(/heap out of memory|ENOMEM|OutOfMemory/i))) return { value: 'memory', why: 'The test process ran out of memory. Close other programs or lower --maxWorkers', line }
+  if ((line = find(/Cannot find module|node_modules|npm ERR!|ENOENT/i))) return { value: 'deps', why: 'Dependencies look missing or broken (run npm install in phoenix-ui)', line }
+  if ((line = find(/Test Run Aborted|testhost process exited|crashed|The active test run was aborted/i))) return { value: 'crash', why: 'The test host crashed before it printed a result', line }
+  return { value: 'no result', why: 'The runner finished (exit ' + exitCode + ') without printing a pass/fail summary', line: find(/\S/) }
+}
+
 // at / nowMs: when the run happened and now, so a run remembered from an earlier session shows its age
 // kind: 'be' (default) or 'fe', only to word the "no run yet" message
 export function testLight(run, command, at, nowMs, kind = 'be') {
@@ -523,17 +543,24 @@ export function depsLight(envs) {
   return { color: prodBad || worst.level === 2 ? COLORS.red : COLORS.amber, value: bad.length + ' bad', short: bad.length + ' dependency(ies) failing more than usual. Worst: ' + line(worst), detail: bad.slice(0, 6).map(line) }
 }
 
-// json: twg jira workitem query for bugs created in the last 24 hours. Highest and High are urgent; "New" means nobody has triaged it yet.
-export function bugsLight(json, jiraBase) {
+// The bugs the Bugs light watches: filed in the last 24 hours and carrying the pod's label (pods are labels named C3Pod<N>)
+export function bugsJql(podLabel) {
+  const pod = podLabel ? ' AND labels = "' + podLabel + '"' : ''
+  return 'project in (C3, PHX) AND issuetype = Bug' + pod + ' AND created >= -1d AND status not in (DISREGARD, COMPLETED) ORDER BY created DESC'
+}
+
+// json: twg jira workitem query for bugsJql. Highest and High are urgent; "New" means nobody has triaged it yet.
+// podLabel: only to word the messages
+export function bugsLight(json, podLabel, jiraBase) {
+  const who = podLabel ? podLabel + ' ' : ''
   const issues = json?.data?.issues
   if (!Array.isArray(issues)) return { color: COLORS.grey, value: '?', short: 'Could not read new Jira bugs (is twg logged in?)', detail: [] }
-  if (issues.length === 0) return { color: COLORS.green, value: '0', short: 'No new bugs in Jira in the last 24 hours', detail: [] }
+  if (issues.length === 0) return { color: COLORS.green, value: '0', short: 'No new ' + who + 'bugs in Jira in the last 24 hours', detail: [] }
   const urgent = issues.filter((i) => /^(highest|high|blocker|critical)$/i.test(i.priority?.name ?? ''))
   const detail = issues.slice(0, 8).map((i) => link(i.key + '  ' + (i.priority?.name ?? '?') + '  ' + (i.status?.name ?? '') + '  ' + shorten(i.summary ?? '', 90), i.url))
-  const jql = 'project in (C3, PHX) AND issuetype = Bug AND created >= -1d AND status not in (DISREGARD, COMPLETED) ORDER BY created DESC'
-  const url = (jiraBase ?? 'https://keyjira.atlassian.net') + '/issues/?jql=' + encodeURIComponent(jql)
+  const url = (jiraBase ?? 'https://keyjira.atlassian.net') + '/issues/?jql=' + encodeURIComponent(bugsJql(podLabel))
   const newest = issues[0]
-  const short = issues.length + ' new bug(s) in the last 24 hours' + (urgent.length ? ', ' + urgent.length + ' urgent (' + urgent.map((i) => i.key).join(', ') + ')' : ', none urgent') + '. Newest: ' + newest.key + ' ' + shorten(newest.summary ?? '', 70)
+  const short = issues.length + ' new ' + who + 'bug(s) in the last 24 hours' + (urgent.length ? ', ' + urgent.length + ' urgent (' + urgent.map((i) => i.key).join(', ') + ')' : ', none urgent') + '. Newest: ' + newest.key + ' ' + shorten(newest.summary ?? '', 70)
   return { color: urgent.length ? COLORS.red : COLORS.teal, value: String(issues.length) + (urgent.length ? '!' : ''), short, detail, url }
 }
 
