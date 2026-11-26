@@ -63,6 +63,7 @@ import {
   parseJsonAny,
   rotateHue,
   machineLight,
+  artifactsFolderName,
 } from '../hooks/lib.js'
 
 const BAND = {
@@ -986,4 +987,14 @@ test('clicking Teams while it is off starts Teams', async ($, on) => {
   expect(teamsStarts).toHaveLength(1)
   expect(toasted.join(' | ')).toContain('started new Teams')
   await ui.unmount()
+})
+
+test('the test build folder is one safe name, whichever slashes the repo root uses', () => {
+  expect(artifactsFolderName('C:\\Dev\\C3')).toBe('C3')
+  expect(artifactsFolderName('C:/Dev/C3/')).toBe('C3')
+  expect(artifactsFolderName('C:\\Dev\\C3-10195\\')).toBe('C3-10195')
+  expect(artifactsFolderName('C:\\Dev\\my repo')).toBe('my_repo')
+  expect(artifactsFolderName('')).toBe('repo')
+  // Never a colon or a separator: that was what made every backend part report "no result"
+  expect(artifactsFolderName('C:\\Dev\\C3')).not.toMatch(/[:\\/]/)
 })

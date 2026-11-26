@@ -477,6 +477,13 @@ export function diagnoseTestPart(output, exitCode, elapsedMs, timeoutMs) {
   return { value: 'no result', why: 'The runner finished (exit ' + exitCode + ') without printing a pass/fail summary', line: last }
 }
 
+// The folder name a checkout's test build output goes in. A Windows session reports the repo root with backslashes ("C:\Dev\C3"),
+// so splitting on "/" alone left the whole path, colon included, in the name: the build could not create it and every part said "no result".
+export function artifactsFolderName(repoRoot) {
+  const last = String(repoRoot ?? '').split(/[\\/]+/).filter(Boolean).pop() ?? ''
+  return last.replace(/[^A-Za-z0-9._-]/g, '_') || 'repo'
+}
+
 // at / nowMs: when the run happened and now, so a run remembered from an earlier session shows its age
 // kind: 'be' (default) or 'fe', only to word the "no run yet" message
 export function testLight(run, command, at, nowMs, kind = 'be') {

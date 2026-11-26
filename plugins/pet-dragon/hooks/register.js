@@ -9,6 +9,7 @@ import {
   spriteRows,
   rotateHue,
   machineLight,
+  artifactsFolderName,
   pickMood,
   isAsleep,
   parseJson,
@@ -712,7 +713,7 @@ async function autoTestPlan($, kind) {
     // test project spent ~3 minutes in MSB3026 copy retries and then failed with no summary, which is what made the light "unclear".
     // One folder per checkout, because obj/<project> names would otherwise collide between worktrees.
     const tmp = ((await $.env.get('TEMP')) ?? 'C:\\Windows\\Temp').replace(/[\\/]+$/, '')
-    const artifacts = isWindows ? tmp + '\\pet-dragon-artifacts\\' + repoRoot.replace(/\/+$/, '').split('/').pop() : undefined
+    const artifacts = isWindows ? tmp + '\\pet-dragon-artifacts\\' + artifactsFolderName(repoRoot) : undefined
     const parts = projects.map((p) => ({ argv: lowPriority($, ['dotnet', 'test', p, '--nologo', ...(artifacts ? ['--artifacts-path', artifacts] : [])]), label: p.split('/').pop().replace(/\.csproj$/, '') }))
     return parts.length ? { cwd: repoRoot, shown: 'dotnet test, all ' + parts.length + ' test projects', parts } : undefined
   }
