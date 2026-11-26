@@ -472,7 +472,9 @@ export function diagnoseTestPart(output, exitCode, elapsedMs, timeoutMs) {
   if ((line = find(/heap out of memory|ENOMEM|OutOfMemory/i))) return { value: 'memory', why: 'The test process ran out of memory. Close other programs or lower --maxWorkers', line }
   if ((line = find(/Cannot find module|node_modules|npm ERR!|ENOENT/i))) return { value: 'deps', why: 'Dependencies look missing or broken (run npm install in phoenix-ui)', line }
   if ((line = find(/Test Run Aborted|testhost process exited|crashed|The active test run was aborted/i))) return { value: 'crash', why: 'The test host crashed before it printed a result', line }
-  return { value: 'no result', why: 'The runner finished (exit ' + exitCode + ') without printing a pass/fail summary', line: find(/\S/) }
+  // The first line is only a banner; the runner's verdict (or its last words before dying) is at the end, past the build warnings
+  const last = text.split('\n').map((l) => l.trim()).filter((l) => l && !/\bwarning\b/i.test(l)).pop()
+  return { value: 'no result', why: 'The runner finished (exit ' + exitCode + ') without printing a pass/fail summary', line: last }
 }
 
 // at / nowMs: when the run happened and now, so a run remembered from an earlier session shows its age

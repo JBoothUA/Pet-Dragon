@@ -834,6 +834,11 @@ test('a test part with no summary names its cause instead of "unclear"', () => {
   expect(none.why).toContain('exit 3')
 })
 
+test('a "no result" part quotes the last meaningful output line, not the banner or a warning', () => {
+  const out = 'Test run for a.dll (.NETCoreApp,Version=v8.0)\nSome message\nx.cs(1,1): warning CS8602: null\n'
+  expect(diagnoseTestPart(out, 0, 5000, 600_000)).toMatchObject({ value: 'no result', line: 'Some message' })
+})
+
 // Hovering the dragon turns it a new color: every sprite cell's hover recolors it by a hue turn
 test('rotateHue turns the hue and keeps lightness', () => {
   expect(rotateHue('#ff0000')).toBe('#00ff00')
