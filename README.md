@@ -92,9 +92,9 @@ Slash commands, short prompts, and prompts typed while Claude is working are nev
 
 ## Speak toggle
 
-Click the dragon's mood label (the `● Happy` text beside the sprite) once to turn `/speak` voice replies on or off. Dragon runs `~/.claude/hooks/speak-toggle.ps1 toggle`, the script behind the `/speak` command, so it needs no model turn and always agrees with `/speak status`. A toast shows the script's answer (`Voice replies: ON` or `OFF`). Windows only.
+Click the dragon once (any row of the sprite) to turn `/speak` voice replies on or off. Dragon runs `~/.claude/hooks/speak-toggle.ps1 toggle`, the script behind the `/speak` command, so it needs no model turn and always agrees with `/speak status`. A toast shows the answer (`Voice replies: ON` or `OFF`). Windows only.
 
-Hovering the dragon turns it a new color; the sprite itself is not a button, so it draws no white hover lines. Voice *input* (hold space) is separate: switch it with `/voice hold`.
+Hovering the dragon turns it a new color. The sprite rows are buttons, so the row under the pointer also flashes white (buttons invert on hover in this API). Voice *input* (hold space) is separate: `/voice hold`.
 
 ## Standup
 

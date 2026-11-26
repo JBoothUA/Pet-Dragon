@@ -962,8 +962,15 @@ async function refreshMonth($, force) {
   }
 }
 
-// Clicking the dragon's mood label toggles /speak (voice replies), the same switch the /speak command flips
+// Clicking the dragon toggles /speak (voice replies), the same switch the /speak command flips
 let voiceBusy = false
+// A cute hello through the same Windows speech engine the /speak replies use (claude-speak.exe is a copy of powershell.exe the stop script can kill).
+// Fire and forget: the speech lasts a few seconds and the toggle should not wait for it.
+const HELLO = 'Hi! Your dragon is awake, and voice replies are on.'
+function sayHello($, home) {
+  const script = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 1; $s.Speak('" + HELLO + "')"
+  $.process.run([home + '\\.claude\\hooks\\claude-speak.exe', '-NoProfile', '-Command', script], { timeoutMs: 30_000 }).catch(() => {})
+}
 async function dragonPressed($) {
   if (voiceBusy) return
   voiceBusy = true
@@ -975,6 +982,7 @@ async function dragonPressed($) {
     const said = String(r.stdout ?? '').trim()
     if (r.exitCode !== 0 || !said) return $.ui.toast('Dragon could not toggle /speak: ' + shorten(String(r.stderr ?? '').trim() || 'no answer (exit ' + r.exitCode + ')', 100))
     $.ui.toast('Dragon: ' + said)
+    if (/\bON\b/.test(said)) sayHello($, home)
   } catch (err) {
     $.ui.toast('Dragon could not toggle /speak: ' + shorten(err?.message ?? err, 100))
   } finally {
@@ -1408,9 +1416,12 @@ export function register(on, options) {
       width: SPRITE_WIDTH + 1,
       hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>
-        // Plain Text, not Buttons: a Button inverts under the pointer, which drew a white line per sprite row. Hovering turns every cell a new hue instead.
-        Text({
+        // Each sprite row is a plain Button (a Box takes no press): one click anywhere on the dragon toggles /speak.
+        // A Button inverts under the pointer, so the hovered row flashes white; the hover scope still recolors the whole dragon.
+        Button({
           key: 'drg-dragon-' + r,
+          plain: true,
+          onPress: () => dragonPressed($),
           children: runs.map((s) =>
             Text({
               color: s.color,
@@ -1427,20 +1438,19 @@ export function register(on, options) {
       ),
     })
 
-    // One click on the mood label toggles /speak voice replies
-    const voiceButton = Button({
-      key: 'drg-speak',
-      plain: true,
-      hover: { scope: 'drg-mood' },
-      onPress: () => dragonPressed($),
-      children: [Text({ color: mood.color, bold: true, children: ['\u25cf ' + mood.label] })],
-    })
     const caption = Box({
       key: 'drg-caption',
       flexDirection: 'row',
-      children: [voiceButton, Text({ dimColor: true, wrap: 'truncate-end', children: [' \u2014 ' + mood.short] })],
-    })
-    // The Standup button sits at the end of the headline row (the second line); pressing it prints the standup into the chat
+      children: [
+        Text({
+          wrap: 'truncate-end',
+          children: [
+            Text({ color: mood.color, bold: true, hover: { scope: 'drg-mood' }, children: ['● ' + mood.label] }),
+            Text({ dimColor: true, children: [' — ' + mood.short] }),
+          ],
+        }),
+      ],
+    })    // The Standup button sits at the end of the headline row (the second line); pressing it prints the standup into the chat
     const standupButton = Button({
       key: 'drg-standup-band',
       plain: true,
@@ -1573,7 +1583,7 @@ export function register(on, options) {
     // Hover line: a hint by default; the hovered item's explanation is drawn over it
     const now = Date.now()
     const reveals = [
-      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Click the mood label to turn /speak voice replies on or off' },
+      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Click the dragon to turn /speak voice replies on or off' },
       { scope: 'drg-coreapi-db', text: 'CoreAPI database: ' + (lights.coreapi?.value ?? '?'), more: dbSwitchTarget(lights.coreapi) ? 'Click to switch CoreAPI to your ' + dbSwitchTarget(lights.coreapi) + ' DB (asks first)' : '' },
       { scope: 'drg-apis', text: 'APIs: CoreAPI, BFF, MoveDocs and the UI dev server', more: 'Click to start whichever are not running' },
       { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to print it in the chat' },
