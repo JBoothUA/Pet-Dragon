@@ -966,7 +966,7 @@ async function refreshMonth($, force) {
 let voiceBusy = false
 // A cute hello through the same Windows speech engine the /speak replies use (claude-speak.exe is a copy of powershell.exe the stop script can kill).
 // Fire and forget: the speech lasts a few seconds and the toggle should not wait for it.
-const HELLO = 'Hi! Your dragon is awake, and voice replies are on.'
+const HELLO = 'Hello! My name is Yoshi, your pet dragon. How can I help you?'
 function sayHello($, home) {
   const script = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Rate = 1; $s.Speak('" + HELLO + "')"
   $.process.run([home + '\\.claude\\hooks\\claude-speak.exe', '-NoProfile', '-Command', script], { timeoutMs: 30_000 }).catch(() => {})

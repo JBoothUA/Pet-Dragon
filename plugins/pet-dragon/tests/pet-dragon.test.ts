@@ -893,7 +893,7 @@ test('turning /speak on makes the dragon say a hello out loud', async ($, on) =>
   await clock.advance(100)
   expect(speakSaid).toHaveLength(1)
   expect(speakSaid[0]).toContain('claude-speak.exe')
-  expect(speakSaid[0]).toContain('Your dragon is awake')
+  expect(speakSaid[0]).toContain('My name is Yoshi')
   await ui.unmount()
 })
 
