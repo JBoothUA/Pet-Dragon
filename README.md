@@ -90,11 +90,11 @@ Dragon gets better at this as you use it:
 
 Slash commands, short prompts, and prompts typed while Claude is working are never interrupted. Set `skill_suggestions` to `off` to disable suggestions entirely.
 
-## Voice mode
+## Speak toggle
 
-Click the dragon's mood label (the `● Happy` text beside the sprite) once to turn voice mode on or off. Hovering the dragon turns it a new color; the sprite itself is not a button, so it draws no white hover lines. Dragon runs `/voice tap` to turn it on and `/voice off` to turn it off, and a toast says which. Claude Code's `/voice` takes `hold`, `tap` or `off`; Dragon uses `tap` for "on" (change `VOICE_ON_MODE` in `hooks/register.js` for `hold`).
+Click the dragon's mood label (the `● Happy` text beside the sprite) once to turn `/speak` voice replies on or off. Dragon runs `~/.claude/hooks/speak-toggle.ps1 toggle`, the script behind the `/speak` command, so it needs no model turn and always agrees with `/speak status`. A toast shows the script's answer (`Voice replies: ON` or `OFF`). Windows only.
 
-A plugin cannot read whether voice is on, so Dragon keeps its own guess: it starts as off each time plugins reload, and flips after each successful click. If you switch voice by hand with `/voice`, the next click may do the wrong thing once. If `/voice` refuses the mode, the toast shows its message and Dragon's guess stays as it was.
+Hovering the dragon turns it a new color; the sprite itself is not a button, so it draws no white hover lines. Voice *input* (hold space) is separate: switch it with `/voice hold`.
 
 ## Standup
 

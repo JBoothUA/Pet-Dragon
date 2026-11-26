@@ -962,23 +962,21 @@ async function refreshMonth($, force) {
   }
 }
 
-// Clicking the dragon's mood label flips voice mode: /voice tap to turn it on, /voice off to turn it off (the command's modes are hold, tap, off).
-// Voice state is not readable from a plugin: it starts as off, and an answer that says the mode was unknown leaves it unchanged.
-const VOICE_ON_MODE = 'tap'
-let voiceOn = false
+// Clicking the dragon's mood label toggles /speak (voice replies), the same switch the /speak command flips
 let voiceBusy = false
 async function dragonPressed($) {
   if (voiceBusy) return
   voiceBusy = true
-  const want = !voiceOn
   try {
-    const r = await $.command.run({ command: 'voice', args: want ? VOICE_ON_MODE : 'off' })
-    const said = String(r?.text ?? '')
-    if (/unknown|usage|error/i.test(said)) return $.ui.toast('Dragon could not switch voice mode: ' + shorten(said, 100))
-    voiceOn = want
-    $.ui.toast('Dragon: voice mode ' + (voiceOn ? 'on (' + VOICE_ON_MODE + ')' : 'off') + (said ? '. ' + shorten(said, 80) : ''))
+    // What the /speak command runs, called directly: no model turn, and the script itself knows whether replies are on
+    const home = await $.env.get('USERPROFILE')
+    if (!isWindows || !home) return $.ui.toast('Dragon: /speak is only wired up on Windows')
+    const r = await $.process.run(['powershell', '-NoProfile', '-File', home + '\\.claude\\hooks\\speak-toggle.ps1', 'toggle'], { timeoutMs: 15_000 })
+    const said = String(r.stdout ?? '').trim()
+    if (r.exitCode !== 0 || !said) return $.ui.toast('Dragon could not toggle /speak: ' + shorten(String(r.stderr ?? '').trim() || 'no answer (exit ' + r.exitCode + ')', 100))
+    $.ui.toast('Dragon: ' + said)
   } catch (err) {
-    $.ui.toast('Dragon could not switch voice mode: ' + shorten(err?.message ?? err, 100))
+    $.ui.toast('Dragon could not toggle /speak: ' + shorten(err?.message ?? err, 100))
   } finally {
     voiceBusy = false
   }
@@ -1429,9 +1427,9 @@ export function register(on, options) {
       ),
     })
 
-    // One click on the mood label turns voice mode on or off
+    // One click on the mood label toggles /speak voice replies
     const voiceButton = Button({
-      key: 'drg-voice',
+      key: 'drg-speak',
       plain: true,
       hover: { scope: 'drg-mood' },
       onPress: () => dragonPressed($),
@@ -1575,7 +1573,7 @@ export function register(on, options) {
     // Hover line: a hint by default; the hovered item's explanation is drawn over it
     const now = Date.now()
     const reveals = [
-      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Click the mood label to turn voice mode on or off' },
+      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Click the mood label to turn /speak voice replies on or off' },
       { scope: 'drg-coreapi-db', text: 'CoreAPI database: ' + (lights.coreapi?.value ?? '?'), more: dbSwitchTarget(lights.coreapi) ? 'Click to switch CoreAPI to your ' + dbSwitchTarget(lights.coreapi) + ' DB (asks first)' : '' },
       { scope: 'drg-apis', text: 'APIs: CoreAPI, BFF, MoveDocs and the UI dev server', more: 'Click to start whichever are not running' },
       { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to print it in the chat' },

@@ -100,10 +100,12 @@ const logged: string[] = []
 const toasted: string[] = []
 
 // Everything session.start and the pollers need, answered in Claude Code's place
+const speakRuns: string[] = []
+let speakAnswer = 'Voice replies: ON'
 function stubSession(on, asked: string[], answer: string, opened: string[] = []) {
   const clock = mock.clock(on)
   mock.store(on, {})
-  mock.env(on, { OS: 'Windows_NT' })
+  mock.env(on, { OS: 'Windows_NT', USERPROFILE: 'C:\Users\me' })
   on('session.start', () => ({ cwd: 'C:\\repo' }))
   on('command.register', () => ({ value: undefined }))
   on('command.list', () => ({ value: COMMANDS }))
@@ -124,7 +126,11 @@ function stubSession(on, asked: string[], answer: string, opened: string[] = [])
   on('process.run', ($, e) => {
     const argv = e.argv.join(' ')
     let stdout = ''
-    if (argv.includes('open-url')) opened.push(argv)
+    if (argv.includes('speak-toggle')) {
+      speakRuns.push(argv)
+      stdout = speakAnswer
+      if (speakAnswer === 'FAIL') return { value: { exitCode: 1, stdout: '', stderr: 'boom' } }
+    } else if (argv.includes('open-url')) opened.push(argv)
     else if (argv.includes('coreapi-probe')) stdout = CORE_UP_LOCAL
     else if (argv.includes('ports-probe')) stdout = PORTS
     else if (argv.includes('messages-probe')) stdout = MAIL
@@ -854,19 +860,16 @@ test('rotateHue always answers a valid hex color that differs from the original'
   expect(rotateHue('#ff6a2b')).not.toBe('#ff6a2b')
 })
 
-// Clicking the dragon's mood label turns voice mode on (/voice tap) and off (/voice off)
-async function mountDragon($, on, voiceAnswer = 'Voice mode set.') {
+// Clicking the dragon's mood label toggles /speak voice replies by running its toggle script
+async function mountDragon($, on, answer = 'Voice replies: ON') {
   const clock = stubSession(on, [], 'No thanks')
-  const voiceRuns: string[] = []
-  on('command.run', (_, e) => {
-    if (e.command === 'voice') voiceRuns.push(e.args)
-    return { text: e.command === 'voice' ? voiceAnswer : '' }
-  })
+  speakRuns.length = 0
+  speakAnswer = answer
   toasted.length = 0
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\repo' })
   await clock.advance(9_000)
   const ui = await $.ui.mount(BAND)
-  return { clock, ui, voiceRuns }
+  return { clock, ui }
 }
 
 test('the dragon sprite is not pressable, so no white hover line is drawn over it', async ($, on) => {
@@ -875,29 +878,32 @@ test('the dragon sprite is not pressable, so no white hover line is drawn over i
   await ui.unmount()
 })
 
-test('one click on the dragon label turns voice on with /voice tap, the next turns it off', async ($, on) => {
-  const { clock, ui, voiceRuns } = await mountDragon($, on)
-  await ui.press({ key: 'drg-voice' })
+test('one click on the dragon label runs the /speak toggle script and toasts its answer', async ($, on) => {
+  const { clock, ui } = await mountDragon($, on)
+  await ui.press({ key: 'drg-speak' })
   await clock.advance(100)
-  expect(voiceRuns).toEqual(['tap'])
-  expect(toasted.join(' | ')).toContain('voice mode on (tap)')
-
-  await ui.press({ key: 'drg-voice' })
-  await clock.advance(100)
-  expect(voiceRuns).toEqual(['tap', 'off'])
-  expect(toasted.join(' | ')).toContain('voice mode off')
+  expect(speakRuns).toHaveLength(1)
+  expect(speakRuns[0]).toContain('speak-toggle.ps1 toggle')
+  expect(speakRuns[0]).toContain('C:\Users\me')
+  expect(toasted.join(' | ')).toContain('Voice replies: ON')
   await ui.unmount()
 })
 
-test('a /voice error is shown and leaves the dragon thinking voice is off', async ($, on) => {
-  const { clock, ui, voiceRuns } = await mountDragon($, on, 'Unknown mode: "tap". Use hold, tap, or off.')
-  await ui.press({ key: 'drg-voice' })
+test('each click toggles again and shows the script answer', async ($, on) => {
+  const { clock, ui } = await mountDragon($, on, 'Voice replies: OFF')
+  await ui.press({ key: 'drg-speak' })
   await clock.advance(100)
-  expect(toasted.join(' | ')).toContain('could not switch voice mode')
+  await ui.press({ key: 'drg-speak' })
+  await clock.advance(100)
+  expect(speakRuns).toHaveLength(2)
+  expect(toasted.join(' | ')).toContain('Voice replies: OFF')
+  await ui.unmount()
+})
 
-  // Still off in the dragon's mind, so the next click asks for on again rather than off
-  await ui.press({ key: 'drg-voice' })
+test('a failing /speak script is reported in a toast', async ($, on) => {
+  const { clock, ui } = await mountDragon($, on, 'FAIL')
+  await ui.press({ key: 'drg-speak' })
   await clock.advance(100)
-  expect(voiceRuns).toEqual(['tap', 'tap'])
+  expect(toasted.join(' | ')).toContain('could not toggle /speak: boom')
   await ui.unmount()
 })
