@@ -145,7 +145,7 @@ const SOURCES = [
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4, col: 1 },
   { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4, col: 2 },
   { id: 'cost', label: 'Cost', title: 'Spend today and this month', row: 4, col: 3 },
-  { id: 'pc', label: 'PC', title: 'This computer (RAM, CPU, disk)', row: 4, col: 4 },
+  { id: 'pc', label: 'PC', title: 'This computer (RAM, CPU, disk)', row: 0, col: 4 },
   { id: 'seq', label: 'Logs', title: 'Seq errors (local)', row: 5, col: 0 },
   { id: 'aiprod', label: 'Prod', title: 'Production errors (App Insights)', hl: 'Prod errors', row: 5, col: 1 },
   { id: 'aiqa', label: 'QA', title: 'QA errors (App Insights)', hl: 'QA errors', row: 5, col: 2, parent: 'aiprod' },
@@ -257,6 +257,7 @@ function clickHint(id, l) {
   if (id === 'drift' && l?.value?.startsWith('↓')) return 'Click to correct the drift (merges origin/development into ' + (lights.git?.branch ?? 'your branch') + ', asks first)'
   if ((id === 'tests' || id === 'fe-tests') && testNeedsRun(l)) return 'Click to run the tests again'
   if (id === 'cache' || id === 'ctx') return 'Click to run /compact (asks what the summary should keep)'
+  if (id === 'teams' && l?.value === 'off') return 'Click to start Teams'
   if (lightUrl(id)) return 'Click to open'
   return 'Click for details in /dragon'
 }
@@ -1207,6 +1208,19 @@ const API_STARTS = [
   { id: 'ui', title: 'Phoenix UI', dir: 'phoenix-ui', cmd: 'npm run dev' },
 ]
 
+// Clicking the Teams light while Teams is off starts it, then looks again so the light turns green
+async function startTeams($) {
+  if (!isWindows) return $.ui.toast('Dragon can only start Teams on Windows.')
+  try {
+    const r = await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $.plugin.root + '\\scripts\\start-teams.ps1'], { timeoutMs: 30_000 })
+    const said = String(r.stdout ?? '').trim()
+    $.ui.toast(r.exitCode === 0 ? 'Dragon: ' + said + '. Its light updates in a moment.' : 'Dragon could not start Teams: ' + (said || 'unknown error'))
+  } catch (err) {
+    $.ui.toast('Dragon could not start Teams: ' + shorten(err?.message ?? err, 80))
+  }
+  for (const secs of [8, 25]) $.clock.after(secs * 1000, () => poll($, 'outlook', true))
+}
+
 async function startApis($) {
   if (!isWindows || !repoRoot) return $.ui.toast('Dragon can only start the APIs from a repo on Windows.')
   // Look at the ports now rather than trusting a light that may be minutes old (or "?"): the UI was skipped that way
@@ -1533,6 +1547,7 @@ export function register(on, options) {
               const kind = s.id === 'tests' ? 'be' : s.id === 'fe-tests' ? 'fe' : undefined
               if (kind && testNeedsRun(l)) return runTestKind($, kind, true)
               if (s.id === 'cache' || s.id === 'ctx') return compactNow($)
+              if (s.id === 'teams' && l?.value === 'off') return startTeams($)
               const url = lightUrl(s.id)
               if (url) openUrl($, url)
               else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })

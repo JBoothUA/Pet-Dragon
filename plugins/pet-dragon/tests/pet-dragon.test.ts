@@ -38,6 +38,7 @@ import {
   approvedByMe,
   worktreeLight,
   headline,
+  teamsLight,
   pulseBright,
   pulsing,
   tokenAdvice,
@@ -104,6 +105,7 @@ const toasted: string[] = []
 // Everything session.start and the pollers need, answered in Claude Code's place
 const speakRuns: string[] = []
 const speakSaid: string[] = []
+const teamsStarts: string[] = []
 let speakAnswer = 'Voice replies: ON'
 function stubSession(on, asked: string[], answer: string, opened: string[] = []) {
   const clock = mock.clock(on)
@@ -135,6 +137,9 @@ function stubSession(on, asked: string[], answer: string, opened: string[] = [])
       speakRuns.push(argv)
       stdout = speakAnswer
       if (speakAnswer === 'FAIL') return { value: { exitCode: 1, stdout: '', stderr: 'boom' } }
+    } else if (argv.includes('start-teams')) {
+      teamsStarts.push(argv)
+      stdout = 'started new Teams'
     } else if (argv.includes('open-url')) opened.push(argv)
     else if (argv.includes('coreapi-probe')) stdout = CORE_UP_LOCAL
     else if (argv.includes('ports-probe')) stdout = PORTS
@@ -953,4 +958,32 @@ test('a saturated CPU or a nearly full disk turns the PC light red', () => {
 test('an unreadable machine probe is a grey PC light, never red', () => {
   expect(machineLight(undefined)).toMatchObject({ color: COLORS.grey, value: '?' })
   expect(machineLight({})).toMatchObject({ color: COLORS.grey })
+})
+
+test('Teams not running is a red light, so it is listed under "needs you"', () => {
+  const off = teamsLight({ teams: 'off' })
+  expect(off).toMatchObject({ color: COLORS.red, value: 'off' })
+  expect(teamsLight({ teams: 'on' }).color).toBe(COLORS.green)
+  const h = headline([{ label: 'Teams', light: off }])
+  expect(h.level).toBe('red')
+  expect(h.text).toContain('Teams off')
+})
+
+test('the PC light sits at the end of the APIs row', () => {
+  const pc = machineLight(PC_OK)
+  expect(pc.value).toBe('RAM 50%')
+})
+
+test('clicking Teams while it is off starts Teams', async ($, on) => {
+  const clock = stubSession(on, [], 'No thanks')
+  teamsStarts.length = 0
+  toasted.length = 0
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\repo' })
+  await clock.advance(9_000)
+  const ui = await $.ui.mount(BAND)
+  await ui.press({ key: 'drg-light-teams' })
+  await clock.advance(100)
+  expect(teamsStarts).toHaveLength(1)
+  expect(toasted.join(' | ')).toContain('started new Teams')
+  await ui.unmount()
 })

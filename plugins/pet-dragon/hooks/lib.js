@@ -328,7 +328,7 @@ export function shouldRemindMeeting(nowMs, idleMs, remindedDay) {
 export function teamsLight(m) {
   if (!m) return { color: COLORS.grey, value: '?', short: 'Teams probe failed to run', detail: [] }
   if (m.teams === 'on') return { color: COLORS.green, value: 'running', short: 'Teams is running', detail: [] }
-  return { color: COLORS.grey, value: 'off', short: 'Teams is not running', detail: [] }
+  return { color: COLORS.red, value: 'off', short: 'Teams is not running: you will miss messages and meeting calls. Start Teams', detail: [] }
 }
 
 // ---- Repo lights: git, pipeline, tests, Seq ----
