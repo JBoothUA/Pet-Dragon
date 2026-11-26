@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import {
+  COLORS,
   MOODS,
   SLEEP,
   IDLE,
@@ -60,6 +61,7 @@ import {
   localDay,
   parseJsonAny,
   rotateHue,
+  machineLight,
 } from '../hooks/lib.js'
 
 const BAND = {
@@ -922,4 +924,33 @@ test('a failing /speak script is reported in a toast', async ($, on) => {
   await clock.advance(100)
   expect(toasted.join(' | ')).toContain('could not toggle /speak: boom')
   await ui.unmount()
+})
+
+// The PC light: red (and blinking) when RAM, CPU or the disk will slow the machine down
+const PC_OK = { ramTotalMb: 32000, ramFreeMb: 16000, cpuPct: 20, diskTotalGb: 500, diskFreeGb: 200, drive: 'C:', top: [{ name: 'chrome', mb: 2048 }] }
+
+test('a healthy computer is a green PC light that does not blink', () => {
+  const l = machineLight(PC_OK)
+  expect(l.color).toBe(COLORS.green)
+  expect(l.value).toBe('RAM 50%')
+  expect(l.alarm).toBe(false)
+})
+
+test('RAM at 80% is amber and at 90% is red and blinking, naming the biggest user', () => {
+  const amber = machineLight({ ...PC_OK, ramFreeMb: 6000 })
+  expect(amber).toMatchObject({ color: COLORS.amber, value: 'RAM 81%', alarm: false })
+  const red = machineLight({ ...PC_OK, ramFreeMb: 2000 })
+  expect(red).toMatchObject({ color: COLORS.red, value: 'RAM 94%', alarm: true })
+  expect(red.short).toContain('chrome')
+})
+
+test('a saturated CPU or a nearly full disk turns the PC light red', () => {
+  expect(machineLight({ ...PC_OK, cpuPct: 97 })).toMatchObject({ color: COLORS.red, value: 'CPU 97%', alarm: true })
+  expect(machineLight({ ...PC_OK, diskFreeGb: 6 })).toMatchObject({ color: COLORS.red, alarm: true })
+  expect(machineLight({ ...PC_OK, diskFreeGb: 6 }).short).toContain('6 GB free')
+})
+
+test('an unreadable machine probe is a grey PC light, never red', () => {
+  expect(machineLight(undefined)).toMatchObject({ color: COLORS.grey, value: '?' })
+  expect(machineLight({})).toMatchObject({ color: COLORS.grey })
 })

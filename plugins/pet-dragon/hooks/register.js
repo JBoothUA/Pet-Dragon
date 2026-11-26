@@ -8,6 +8,7 @@ import {
   SPRITE_WIDTH,
   spriteRows,
   rotateHue,
+  machineLight,
   pickMood,
   isAsleep,
   parseJson,
@@ -144,6 +145,7 @@ const SOURCES = [
   { id: 'ctx', label: 'Ctx', title: 'Context window', row: 4, col: 1 },
   { id: 'sessions', label: 'Sess', title: 'Open Claude sessions', row: 4, col: 2 },
   { id: 'cost', label: 'Cost', title: 'Spend today and this month', row: 4, col: 3 },
+  { id: 'pc', label: 'PC', title: 'This computer (RAM, CPU, disk)', row: 4, col: 4 },
   { id: 'seq', label: 'Logs', title: 'Seq errors (local)', row: 5, col: 0 },
   { id: 'aiprod', label: 'Prod', title: 'Production errors (App Insights)', hl: 'Prod errors', row: 5, col: 1 },
   { id: 'aiqa', label: 'QA', title: 'QA errors (App Insights)', hl: 'QA errors', row: 5, col: 2, parent: 'aiprod' },
@@ -153,7 +155,7 @@ const SOURCES = [
 ]
 const companions = (key) => SOURCES.filter((s) => s.parent === key).map((s) => s.id)
 // These describe this session's repo and branch, so they are never shared through $.store
-const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'fe-tests', 'radar', 'ctx', 'cost', 'cache'])
+const LOCAL_ONLY = new Set(['git', 'pipeline', 'tests', 'fe-tests', 'radar', 'ctx', 'cost', 'cache', 'pc'])
 const ERROR_LIMIT = 50
 // The account usage the app's usage card shows (not a documented API: a failed reply keeps the last reading)
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
@@ -207,6 +209,7 @@ function intervalMs(id) {
   if (id === 'radar') return Number(opts.radar_poll_minutes) * 60_000
   if (id === 'aiprod') return Number(opts.ai_poll_minutes) * 60_000
   if (id === 'bugs') return Number(opts.radar_poll_minutes) * 60_000
+  if (id === 'pc') return 15_000
   if (id === 'cidev') return Math.max(Number(opts.pipeline_poll_minutes), 5) * 60_000
   return Number(opts.bitbucket_poll_minutes) * 60_000
 }
@@ -224,15 +227,19 @@ function setLight(id, light, checkedAt) {
   lights[id] = { ...light, checkedAt, changedAt: changed ? Date.now() : prev?.changedAt }
 }
 
-// Redraws every PULSE_STEP_MS while any light is mid-flash, then stops
+// A light with `alarm` (the computer running out of RAM) blinks for as long as it stays red, not just when it changes
+const flashing = (l, nowMs) => pulsing(l, nowMs) || l?.alarm === true
+const blinkBright = (l, nowMs) => pulseBright(l, nowMs) || (l?.alarm === true && Math.floor(nowMs / PULSE_STEP_MS) % 2 === 0)
+
+// Redraws every PULSE_STEP_MS while any light is mid-flash or alarming, then stops
 let pulseTimer = null
 function syncPulse($) {
   const now = Date.now()
-  const any = Object.values(lights).some((l) => pulsing(l, now))
+  const any = Object.values(lights).some((l) => flashing(l, now))
   if (any && !pulseTimer) {
     pulseTimer = $.clock.every(PULSE_STEP_MS, () => {
       $.ui.invalidate('ui.render')
-      if (!Object.values(lights).some((l) => pulsing(l, Date.now()))) {
+      if (!Object.values(lights).some((l) => flashing(l, Date.now()))) {
         pulseTimer?.cancel()
         pulseTimer = null
       }
@@ -324,6 +331,10 @@ async function poll($, id, force) {
         setLight('movedocs', serviceLight('MoveDocs API', svc ? svc[ports[1]] ?? { up: false } : null, ports[1]), now)
         setLight('ui', serviceLight('phoenix-ui dev server', svc ? svc[ports[2]] ?? { up: false } : null, ports[2], 'http://localhost:' + ports[2]), now)
       }
+    } else if (key === 'pc') {
+      const was = lights.pc?.color
+      setLight('pc', isWindows ? machineLight(await runPowerShell($, 'machine-probe.ps1', [])) : { color: COLORS.grey, value: 'n/a', short: 'The computer check needs Windows', detail: [] }, now)
+      alertOnRed($, 'pc', was, 'This computer is running out of resources')
     } else if (key === 'outlook') {
       const m = isWindows ? await runPowerShell($, 'messages-probe.ps1', []) : { outlook: 'off', teams: 'off' }
       setLight('outlook', outlookLight(m), now)
@@ -1066,7 +1077,7 @@ function noteTyping($, typing) {
 }
 
 // Anything the person or Claude does wakes the dragon
-const POLL_IDS = ['git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs']
+const POLL_IDS = ['pc', 'git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs']
 function noteActivity($) {
   lastActivity = Date.now()
   if (wasSleepy) {
@@ -1551,7 +1562,7 @@ export function register(on, options) {
               })
             }
             // A light whose value just changed flashes: a filled dot and a highlighted value on every other step
-            const flash = pulseBright(l, nowMs)
+            const flash = blinkBright(l, nowMs)
             if (part) {
               const figures = lights.cost.parts
               return Button({

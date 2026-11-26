@@ -704,6 +704,37 @@ export function costLight(day, month) {
   }
 }
 
+// ---- This computer ----
+
+// m: the machine-probe.ps1 reading. Red means the machine is about to slow down (alarm: the light blinks until it clears).
+export const MACHINE_LIMITS = { ramRed: 90, ramAmber: 80, cpuRed: 95, cpuAmber: 85, diskRedPct: 95, diskRedFreeGb: 10, diskAmberPct: 90 }
+export function machineLight(m) {
+  if (!m || typeof m.ramTotalMb !== 'number' || !m.ramTotalMb) return { color: COLORS.grey, value: '?', short: 'Could not read this computer\'s RAM and CPU', detail: [] }
+  const L = MACHINE_LIMITS
+  const ramPct = Math.round(((m.ramTotalMb - m.ramFreeMb) / m.ramTotalMb) * 100)
+  const cpu = Number.isFinite(m.cpuPct) ? m.cpuPct : 0
+  const hasDisk = typeof m.diskTotalGb === 'number' && m.diskTotalGb > 0
+  const diskPct = hasDisk ? Math.round(((m.diskTotalGb - m.diskFreeGb) / m.diskTotalGb) * 100) : 0
+  const gb = (mb) => (mb / 1024).toFixed(1)
+  const level = (red, amber) => (red ? 2 : amber ? 1 : 0)
+  const parts = [
+    { name: 'RAM', level: level(ramPct >= L.ramRed, ramPct >= L.ramAmber), text: 'RAM ' + ramPct + '%', why: 'RAM is ' + ramPct + '% used (' + gb(m.ramTotalMb - m.ramFreeMb) + ' of ' + gb(m.ramTotalMb) + ' GB): Windows starts paging to disk and everything slows down' },
+    { name: 'CPU', level: level(cpu >= L.cpuRed, cpu >= L.cpuAmber), text: 'CPU ' + cpu + '%', why: 'CPU is at ' + cpu + '%: the machine is saturated' },
+  ]
+  if (hasDisk) {
+    parts.push({ name: 'Disk', level: level(diskPct >= L.diskRedPct || m.diskFreeGb < L.diskRedFreeGb, diskPct >= L.diskAmberPct), text: (m.drive ?? 'C:') + ' ' + diskPct + '%', why: (m.drive ?? 'C:') + ' is ' + diskPct + '% full (' + m.diskFreeGb + ' GB free): builds and the page file need room' })
+  }
+  const worst = Math.max(...parts.map((p) => p.level))
+  const hot = parts.filter((p) => p.level === worst && worst > 0)
+  // The headline is the worst problem; when all is well, the two numbers that matter most
+  const value = hot.length ? hot.map((p) => p.text).join(' ') : 'RAM ' + ramPct + '%'
+  const color = worst === 2 ? COLORS.red : worst === 1 ? COLORS.amber : COLORS.green
+  const hogs = (m.top ?? []).map((p) => p.name + ' ' + gb(p.mb) + ' GB')
+  const detail = [parts.map((p) => p.text).join(' · '), ...(hogs.length ? ['Most memory: ' + hogs.join(', ')] : [])]
+  const short = hot.length ? hot.map((p) => p.why).join('. ') + (hogs.length ? '. Biggest memory user: ' + hogs[0] : '') : 'This computer is fine: ' + parts.map((p) => p.text).join(', ')
+  return { color, value, short, detail, alarm: worst === 2 }
+}
+
 // ---- Token coach ----
 
 const usageColor = (pct) => (pct >= 85 ? COLORS.red : pct >= 60 ? COLORS.amber : COLORS.green)
