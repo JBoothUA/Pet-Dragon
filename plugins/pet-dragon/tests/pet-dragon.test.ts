@@ -59,6 +59,7 @@ import {
   standupSince,
   localDay,
   parseJsonAny,
+  rotateHue,
 } from '../hooks/lib.js'
 
 const BAND = {
@@ -831,4 +832,67 @@ test('a test part with no summary names its cause instead of "unclear"', () => {
   const none = diagnoseTestPart('something odd', 3, 5000, limit)
   expect(none.value).toBe('no result')
   expect(none.why).toContain('exit 3')
+})
+
+// Hovering the dragon turns it a new color: every sprite cell's hover recolors it by a hue turn
+test('rotateHue turns the hue and keeps lightness', () => {
+  expect(rotateHue('#ff0000')).toBe('#00ff00')
+  expect(rotateHue('#ff0000', 240)).toBe('#0000ff')
+  expect(rotateHue('#808080')).toBe('#808080')
+  expect(rotateHue('#ff0000', 360)).toBe('#ff0000')
+})
+
+test('rotateHue always answers a valid hex color that differs from the original', () => {
+  for (const c of ['#ff6a2b', '#2ecc71', '#123456', '#fafafa', '#000000']) {
+    expect(rotateHue(c)).toMatch(/^#[0-9a-f]{6}$/)
+  }
+  expect(rotateHue('#ff6a2b')).not.toBe('#ff6a2b')
+})
+
+// Clicking the dragon's mood label turns voice mode on (/voice tap) and off (/voice off)
+async function mountDragon($, on, voiceAnswer = 'Voice mode set.') {
+  const clock = stubSession(on, [], 'No thanks')
+  const voiceRuns: string[] = []
+  on('command.run', (_, e) => {
+    if (e.command === 'voice') voiceRuns.push(e.args)
+    return { text: e.command === 'voice' ? voiceAnswer : '' }
+  })
+  toasted.length = 0
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\repo' })
+  await clock.advance(9_000)
+  const ui = await $.ui.mount(BAND)
+  return { clock, ui, voiceRuns }
+}
+
+test('the dragon sprite is not pressable, so no white hover line is drawn over it', async ($, on) => {
+  const { ui } = await mountDragon($, on)
+  for (let r = 0; r < 4; r++) await expect(ui.press({ key: 'drg-dragon-' + r })).rejects.toBeDefined()
+  await ui.unmount()
+})
+
+test('one click on the dragon label turns voice on with /voice tap, the next turns it off', async ($, on) => {
+  const { clock, ui, voiceRuns } = await mountDragon($, on)
+  await ui.press({ key: 'drg-voice' })
+  await clock.advance(100)
+  expect(voiceRuns).toEqual(['tap'])
+  expect(toasted.join(' | ')).toContain('voice mode on (tap)')
+
+  await ui.press({ key: 'drg-voice' })
+  await clock.advance(100)
+  expect(voiceRuns).toEqual(['tap', 'off'])
+  expect(toasted.join(' | ')).toContain('voice mode off')
+  await ui.unmount()
+})
+
+test('a /voice error is shown and leaves the dragon thinking voice is off', async ($, on) => {
+  const { clock, ui, voiceRuns } = await mountDragon($, on, 'Unknown mode: "tap". Use hold, tap, or off.')
+  await ui.press({ key: 'drg-voice' })
+  await clock.advance(100)
+  expect(toasted.join(' | ')).toContain('could not switch voice mode')
+
+  // Still off in the dragon's mind, so the next click asks for on again rather than off
+  await ui.press({ key: 'drg-voice' })
+  await clock.advance(100)
+  expect(voiceRuns).toEqual(['tap', 'tap'])
+  await ui.unmount()
 })

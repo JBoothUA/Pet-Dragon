@@ -90,6 +90,12 @@ Dragon gets better at this as you use it:
 
 Slash commands, short prompts, and prompts typed while Claude is working are never interrupted. Set `skill_suggestions` to `off` to disable suggestions entirely.
 
+## Voice mode
+
+Click the dragon's mood label (the `● Happy` text beside the sprite) once to turn voice mode on or off. Hovering the dragon turns it a new color; the sprite itself is not a button, so it draws no white hover lines. Dragon runs `/voice tap` to turn it on and `/voice off` to turn it off, and a toast says which. Claude Code's `/voice` takes `hold`, `tap` or `off`; Dragon uses `tap` for "on" (change `VOICE_ON_MODE` in `hooks/register.js` for `hold`).
+
+A plugin cannot read whether voice is on, so Dragon keeps its own guess: it starts as off each time plugins reload, and flips after each successful click. If you switch voice by hand with `/voice`, the next click may do the wrong thing once. If `/voice` refuses the mode, the toast shows its message and Dragon's guess stays as it was.
+
 ## Standup
 
 `/dragon standup` prints what changed since the previous working day (yesterday, or Friday on a Monday): your Jira issues updated, your Bitbucket PRs updated (open, merged or declined, in `pr_repo_id`'s repo), and your own commits across all local branches. The three sources run in parallel, and one that fails (say `twg` is logged out) says so without hiding the others. The **[ Standup ]** button at the end of the band's top line prints the same text into the chat (a dim line, not sent to Claude). The pane's **u** button shows it inside `/dragon` instead.

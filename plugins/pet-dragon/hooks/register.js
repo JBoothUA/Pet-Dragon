@@ -7,6 +7,7 @@ import {
   FLAP_MS,
   SPRITE_WIDTH,
   spriteRows,
+  rotateHue,
   pickMood,
   isAsleep,
   parseJson,
@@ -961,6 +962,28 @@ async function refreshMonth($, force) {
   }
 }
 
+// Clicking the dragon's mood label flips voice mode: /voice tap to turn it on, /voice off to turn it off (the command's modes are hold, tap, off).
+// Voice state is not readable from a plugin: it starts as off, and an answer that says the mode was unknown leaves it unchanged.
+const VOICE_ON_MODE = 'tap'
+let voiceOn = false
+let voiceBusy = false
+async function dragonPressed($) {
+  if (voiceBusy) return
+  voiceBusy = true
+  const want = !voiceOn
+  try {
+    const r = await $.command.run({ command: 'voice', args: want ? VOICE_ON_MODE : 'off' })
+    const said = String(r?.text ?? '')
+    if (/unknown|usage|error/i.test(said)) return $.ui.toast('Dragon could not switch voice mode: ' + shorten(said, 100))
+    voiceOn = want
+    $.ui.toast('Dragon: voice mode ' + (voiceOn ? 'on (' + VOICE_ON_MODE + ')' : 'off') + (said ? '. ' + shorten(said, 80) : ''))
+  } catch (err) {
+    $.ui.toast('Dragon could not switch voice mode: ' + shorten(err?.message ?? err, 100))
+  } finally {
+    voiceBusy = false
+  }
+}
+
 // Clicking the Cache light: /compact, asking first what the summary should keep. The cache is warm at the cheapest moment to do it.
 const COMPACT_KEEP = 'Keep the current task, decisions made, file paths, and open TODOs.'
 async function compactNow($) {
@@ -1387,23 +1410,38 @@ export function register(on, options) {
       width: SPRITE_WIDTH + 1,
       hover: { scope: 'drg-mood' },
       children: spriteRows(f, mood.color).map((runs, r) =>
+        // Plain Text, not Buttons: a Button inverts under the pointer, which drew a white line per sprite row. Hovering turns every cell a new hue instead.
         Text({
           key: 'drg-dragon-' + r,
           children: runs.map((s) =>
-            Text({ color: s.color, backgroundColor: s.backgroundColor, hover: { scope: 'drg-mood' }, children: [s.text] }),
+            Text({
+              color: s.color,
+              backgroundColor: s.backgroundColor,
+              hover: {
+                scope: 'drg-mood',
+                ...(s.color && { color: rotateHue(s.color) }),
+                ...(s.backgroundColor && { backgroundColor: rotateHue(s.backgroundColor) }),
+              },
+              children: [s.text],
+            }),
           ),
         }),
       ),
     })
 
-    const captionText = Text({
-      wrap: 'truncate-end',
-      children: [
-        Text({ color: mood.color, bold: true, hover: { scope: 'drg-mood' }, children: ['\u25cf ' + mood.label] }),
-        Text({ dimColor: true, children: [' \u2014 ' + mood.short] }),
-      ],
+    // One click on the mood label turns voice mode on or off
+    const voiceButton = Button({
+      key: 'drg-voice',
+      plain: true,
+      hover: { scope: 'drg-mood' },
+      onPress: () => dragonPressed($),
+      children: [Text({ color: mood.color, bold: true, children: ['\u25cf ' + mood.label] })],
     })
-    const caption = Box({ key: 'drg-caption', flexDirection: 'row', children: [captionText] })
+    const caption = Box({
+      key: 'drg-caption',
+      flexDirection: 'row',
+      children: [voiceButton, Text({ dimColor: true, wrap: 'truncate-end', children: [' \u2014 ' + mood.short] })],
+    })
     // The Standup button sits at the end of the headline row (the second line); pressing it prints the standup into the chat
     const standupButton = Button({
       key: 'drg-standup-band',
@@ -1537,7 +1575,7 @@ export function register(on, options) {
     // Hover line: a hint by default; the hovered item's explanation is drawn over it
     const now = Date.now()
     const reveals = [
-      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: '' },
+      { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Click the mood label to turn voice mode on or off' },
       { scope: 'drg-coreapi-db', text: 'CoreAPI database: ' + (lights.coreapi?.value ?? '?'), more: dbSwitchTarget(lights.coreapi) ? 'Click to switch CoreAPI to your ' + dbSwitchTarget(lights.coreapi) + ' DB (asks first)' : '' },
       { scope: 'drg-apis', text: 'APIs: CoreAPI, BFF, MoveDocs and the UI dev server', more: 'Click to start whichever are not running' },
       { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to print it in the chat' },
