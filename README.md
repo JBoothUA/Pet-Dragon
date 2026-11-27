@@ -105,7 +105,7 @@ The **PC** light reads this computer every 15 seconds: RAM, CPU and the system d
 
 ## Standup
 
-`/dragon standup` prints what changed since the previous working day (yesterday, or Friday on a Monday): your Jira issues updated, your Bitbucket PRs updated (open, merged or declined, in `pr_repo_id`'s repo), and your own commits across all local branches. The three sources run in parallel, and one that fails (say `twg` is logged out) says so without hiding the others. The **[ Standup ]** button at the end of the band's top line prints the same text into the chat (a dim line, not sent to Claude). The pane's **u** button shows it inside `/dragon` instead.
+`/dragon standup` prints what changed since the previous working day (yesterday, or Friday on a Monday): your Jira issues updated, your Bitbucket PRs updated (open, merged or declined, in `pr_repo_id`'s repo), and your own commits across all local branches. The three sources run in parallel, and one that fails (say `twg` is logged out) says so without hiding the others. The **[ Standup ]** button at the end of the Comm row (the first row of lights) prints the same text into the chat (a dim line, not sent to Claude). The pane's **u** button shows it inside `/dragon` instead.
 
 `/dragon sleep` puts Dragon to sleep at once instead of waiting for `sleepy_after_minutes`; typing anything wakes it.
 
