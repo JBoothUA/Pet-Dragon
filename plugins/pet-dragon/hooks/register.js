@@ -1544,7 +1544,7 @@ export function register(on, options) {
       // A plugin cannot run its own command or submit a leading-slash prompt, so print into the chat directly
       onPress: () => printStandup($),
       // A fuchsia-to-periwinkle gradient: a color no status light uses
-      children: gradient('[ ✦ Standup ✦ ]', '#ff4fd8', '#5b8cff').map((g, i) => Text({ key: 'drg-standup-ch-' + i, color: g.color, bold: true, children: [g.text] })),
+      children: gradient('[ Standup ]', '#ff4fd8', '#5b8cff').map((g, i) => Text({ key: 'drg-standup-ch-' + i, color: g.color, bold: true, children: [g.text] })),
     })
 
     const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Rel', 'AI', 'Errs', 'Comm']

@@ -104,7 +104,7 @@ function printLights() {
   console.log(chip('Cache', cacheLight(now - 90 * 60_000, now, false)))
   for (const pct of [40, 70, 90]) console.log(chip('Ctx', ctxLight(pct)))
   head('The Standup button: a fuchsia-to-periwinkle gradient, a color no status light uses')
-  console.log('  ' + gradient('[ ✦ Standup ✦ ]', '#ff4fd8', '#5b8cff').map((g) => '\x1b[1m\x1b[38;2;' + rgb(g.color) + 'm' + g.text).join('') + RESET)
+  console.log('  ' + gradient('[ Standup ]', '#ff4fd8', '#5b8cff').map((g) => '\x1b[1m\x1b[38;2;' + rgb(g.color) + 'm' + g.text).join('') + RESET)
   head('Story points (Pts) and the pod low-high (Pod), sample sprint')
   const sp = (id, state, start, end) => ({ id, name: 'C3 Sprint ' + id, state, startDate: start, endDate: end })
   const s36 = sp(36, 'closed', '2026-11-04T00:00:00Z', '2026-11-18T00:00:00Z')
