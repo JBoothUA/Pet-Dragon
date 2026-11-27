@@ -273,6 +273,7 @@ function clickHint(id, l) {
   if (id === 'git' && (l?.value ?? '').includes('↓')) return 'Click to merge origin into this branch (asks first)'
   if (id === 'drift' && l?.value?.startsWith('↓')) return 'Click to correct the drift (merges origin/development into ' + (lights.git?.branch ?? 'your branch') + ', asks first)'
   if ((id === 'tests' || id === 'fe-tests') && testNeedsRun(l)) return 'Click to run the tests again'
+  if ((id === 'tests' || id === 'fe-tests') && !testBusy[id === 'tests' ? 'be' : 'fe'] && l?.value !== 'queued') return 'Click to run the tests again (asks first)'
   if (id === 'cache' || id === 'ctx') return 'Click to run /compact (asks what the summary should keep)'
   if (id === 'teams' && l?.value === 'off') return 'Click to start Teams'
   if (lightUrl(id)) return 'Click to open'
@@ -816,10 +817,21 @@ async function runPart($, argv, cwd, onProgress) {
 
 // A part that finishes without a pass/fail summary is recorded with its cause and the run goes on to the next part, so one slow or
 // broken project no longer hides the result of the rest. force: re-run although the light shows a problem (a click on it).
-async function runTestKind($, kind, force) {
+// A click on a test light that is not in trouble: running the whole suite is slow, so ask first
+async function confirmTestRun($, kind) {
+  const what = kind === 'fe' ? 'the full front-end Jest suite (24 parts, about 100 minutes)' : 'every C# test project'
+  try {
+    return (await $.ui.ask('Run ' + what + ' now?', { header: 'Dragon', options: ['Run the tests', 'Not now'] })) === 'Run the tests'
+  } catch {
+    return false
+  }
+}
+
+// again: a click on a light that shows a passing result, after confirmTestRun
+async function runTestKind($, kind, force, again) {
   const light = TEST_KINDS[kind].light
   const value = lights[light]?.value
-  if (testBusy[kind] || !(value === 'not run' || value === 'queued' || (force && testNeedsRun(lights[light])))) return
+  if (testBusy[kind] || !(again || value === 'not run' || value === 'queued' || (force && testNeedsRun(lights[light])))) return
   testBusy[kind] = true
   try {
     const plan = await autoTestPlan($, kind)
@@ -1608,6 +1620,11 @@ export function register(on, options) {
               // A test light that could not get a result has nothing worth opening: a click runs it again
               const kind = s.id === 'tests' ? 'be' : s.id === 'fe-tests' ? 'fe' : undefined
               if (kind && testNeedsRun(l)) return runTestKind($, kind, true)
+              // Any other test light that is not running: ask, then run the suite again
+              if (kind && !testBusy[kind] && l?.value !== 'queued') {
+                if (await confirmTestRun($, kind)) runTestKind($, kind, true, true)
+                return
+              }
               if (s.id === 'cache' || s.id === 'ctx') return compactNow($)
               if (s.id === 'teams' && l?.value === 'off') return startTeams($)
               const url = lightUrl(s.id)
