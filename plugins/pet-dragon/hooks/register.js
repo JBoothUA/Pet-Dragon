@@ -30,6 +30,7 @@ import {
   depsLight,
   bugsLight,
   bugsJql,
+  gradient,
   SPRINT_FIELDS,
   POINTS_DONE_STATUSES,
   sprintJql,
@@ -1542,7 +1543,8 @@ export function register(on, options) {
       hover: { scope: 'drg-standup', underline: true },
       // A plugin cannot run its own command or submit a leading-slash prompt, so print into the chat directly
       onPress: () => printStandup($),
-      children: [Text({ color: COLORS.ember, bold: true, children: ['[ Standup ]'] })],
+      // A fuchsia-to-periwinkle gradient: a color no status light uses
+      children: gradient('[ ✦ Standup ✦ ]', '#ff4fd8', '#5b8cff').map((g, i) => Text({ key: 'drg-standup-ch-' + i, color: g.color, bold: true, children: [g.text] })),
     })
 
     const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Rel', 'AI', 'Errs', 'Comm']

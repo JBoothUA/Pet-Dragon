@@ -1,7 +1,7 @@
 // Draws Dragon in every mood color, in real terminal colors, from the plugin's own frames.
 //   node tools/mascot-preview.mjs            every mood (working moods show the downstroke)
 //   node tools/mascot-preview.mjs --animate  the working animation for a few seconds
-import { IDLE, FLAP, SLEEP, FLAP_MS, MOODS, COLORS, PAL, SPRITE_WIDTH, spriteRows, rotateHue, shade, partialRunColor, testLight, machineLight, cacheLight, ctxLight, headline, meetLight, pointsStats, pointsLights, slimIssue } from '../plugins/pet-dragon/hooks/lib.js'
+import { IDLE, FLAP, SLEEP, FLAP_MS, MOODS, COLORS, PAL, SPRITE_WIDTH, spriteRows, rotateHue, shade, partialRunColor, testLight, machineLight, cacheLight, ctxLight, headline, meetLight, pointsStats, pointsLights, slimIssue, gradient } from '../plugins/pet-dragon/hooks/lib.js'
 
 const RESET = '\x1b[0m'
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(';')
@@ -103,6 +103,8 @@ function printLights() {
   console.log(chip('Cache', cacheLight(now - 59 * 60_000, now, false)))
   console.log(chip('Cache', cacheLight(now - 90 * 60_000, now, false)))
   for (const pct of [40, 70, 90]) console.log(chip('Ctx', ctxLight(pct)))
+  head('The Standup button: a fuchsia-to-periwinkle gradient, a color no status light uses')
+  console.log('  ' + gradient('[ ✦ Standup ✦ ]', '#ff4fd8', '#5b8cff').map((g) => '\x1b[1m\x1b[38;2;' + rgb(g.color) + 'm' + g.text).join('') + RESET)
   head('Story points (Pts) and the pod low-high (Pod), sample sprint')
   const sp = (id, state, start, end) => ({ id, name: 'C3 Sprint ' + id, state, startDate: start, endDate: end })
   const s36 = sp(36, 'closed', '2026-11-04T00:00:00Z', '2026-11-18T00:00:00Z')

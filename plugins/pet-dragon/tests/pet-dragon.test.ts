@@ -15,6 +15,7 @@ import {
   aiHealthLight,
   depsLight,
   bugsLight,
+  gradient,
   sprintJql,
   sprintNumber,
   slimIssue,
@@ -925,6 +926,14 @@ test('the Bugs query is limited to the pod label, or open to every pod when it i
   expect(bugsJql('C3Pod2')).toContain('labels = "C3Pod2"')
   expect(bugsJql('')).not.toContain('labels')
   expect(bugsJql('C3Pod2')).toContain('created >= -1d')
+})
+
+test('gradient colors each character along a line between two colors', () => {
+  const g = gradient('abc', '#000000', '#ff8000')
+  expect(g.map((x: any) => x.text).join('')).toBe('abc')
+  expect(g.map((x: any) => x.color)).toEqual(['#000000', '#804000', '#ff8000'])
+  expect(gradient('a', '#102030', '#ffffff')[0].color).toBe('#102030')
+  expect(gradient('', '#000000', '#ffffff')).toEqual([])
 })
 
 const S = (id: number, state: string, start: string) => ({ id, name: 'C3 Sprint ' + id, state, startDate: start, endDate: start })

@@ -115,6 +115,17 @@ export function outline(grid) {
 export const SPRITE_WIDTH = IDLE[0].length
 
 // The color a sprite cell turns while the dragon is hovered: the same color with its hue turned by deg degrees (default a third of the wheel, so ember red reads as green)
+// The text one character at a time, each colored along a straight line from one hex color to another: [{ text, color }]
+export function gradient(text, from, to) {
+  const ch = (hex, i) => parseInt(hex.slice(1 + 2 * i, 3 + 2 * i), 16)
+  const chars = [...String(text)]
+  return chars.map((c, n) => {
+    const t = chars.length > 1 ? n / (chars.length - 1) : 0
+    const rgb = [0, 1, 2].map((i) => Math.round(ch(from, i) + (ch(to, i) - ch(from, i)) * t))
+    return { text: c, color: '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('') }
+  })
+}
+
 export function rotateHue(hex, deg = 120) {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
   const max = Math.max(r, g, b)
