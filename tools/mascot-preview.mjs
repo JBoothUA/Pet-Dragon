@@ -1,7 +1,7 @@
 // Draws Dragon in every mood color, in real terminal colors, from the plugin's own frames.
 //   node tools/mascot-preview.mjs            every mood (working moods show the downstroke)
 //   node tools/mascot-preview.mjs --animate  the working animation for a few seconds
-import { IDLE, FLAP, SLEEP, FLAP_MS, MOODS, COLORS, PAL, SPRITE_WIDTH, spriteRows, rotateHue, shade, partialRunColor, testLight, machineLight, cacheLight, ctxLight, headline } from '../plugins/pet-dragon/hooks/lib.js'
+import { IDLE, FLAP, SLEEP, FLAP_MS, MOODS, COLORS, PAL, SPRITE_WIDTH, spriteRows, rotateHue, shade, partialRunColor, testLight, machineLight, cacheLight, ctxLight, headline, meetLight, pointsStats, pointsLights, slimIssue } from '../plugins/pet-dragon/hooks/lib.js'
 
 const RESET = '\x1b[0m'
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(';')
@@ -103,10 +103,32 @@ function printLights() {
   console.log(chip('Cache', cacheLight(now - 59 * 60_000, now, false)))
   console.log(chip('Cache', cacheLight(now - 90 * 60_000, now, false)))
   for (const pct of [40, 70, 90]) console.log(chip('Ctx', ctxLight(pct)))
-  head('Headline under the dragon')
+  head('Story points (Pts) and the pod low-high (Pod), sample sprint')
+  const sp = (id, state, start, end) => ({ id, name: 'C3 Sprint ' + id, state, startDate: start, endDate: end })
+  const s36 = sp(36, 'closed', '2026-11-04T00:00:00Z', '2026-11-18T00:00:00Z')
+  const s37 = sp(37, 'active', '2026-11-18T00:00:00Z', '2026-12-02T00:00:00Z')
+  const tk = (key, status, pts, dev, sprints) => slimIssue({ key, status: { name: status }, customfield_10004: pts, customfield_11232: { accountId: dev, displayName: dev }, customfield_10006: sprints })
+  const sprintNow = Date.parse('2026-11-25T00:00:00Z')
+  const show = (me) => {
+    const l = pointsLights(pointsStats([tk('C3-1', 'Dev Done', me, 'me', [s37]), tk('C3-2', 'COMPLETED', 10, 'me', [s36]), tk('C3-3', 'Dev Done', 13, 'Sam', [s37]), tk('C3-4', 'Code Review', 2, 'Zed', [s37])], 'me'), 'C3Pod2', sprintNow)
+    console.log(chip('Pts', l.points))
+    console.log(chip('Pod', l.pod))
+  }
+  show(20)
+  show(8)
+  show(1)
+  console.log(chip('Pts', pointsLights(undefined, 'C3Pod2', sprintNow).points))
+  head('Mtgs: meetings left today, the next one on its way, and none at all')
+  const at = Date.parse('2026-11-26T12:00:00')
+  const mtg = (start, end) => ({ start, end, subject: 'Standup', location: 'Teams', allDay: false })
+  console.log(chip('Mtgs', meetLight({ outlook: 'on', meetings: [mtg('2026-11-26T15:00', '2026-11-26T15:30'), mtg('2026-11-27T08:00', '2026-11-27T08:30')] }, at)))
+  console.log(chip('Mtgs', meetLight({ outlook: 'on', meetings: [mtg('2026-11-26T12:10', '2026-11-26T12:40')] }, at)))
+  console.log(chip('Mtgs', meetLight({ outlook: 'on', meetings: [mtg('2026-11-27T08:00', '2026-11-27T08:30')] }, at)))
+  console.log(chip('Mtgs', meetLight({ outlook: 'on', meetings: [] }, at)))
+  head('Headline under the dragon (your own PRs are not counted: peers review those)')
   const items = [
     { label: 'PC', light: pc(20) },
-    { label: 'PRs', light: { color: COLORS.amber, value: '4!2' } },
+    { label: 'Review', light: { color: COLORS.amber, value: '2' } },
     { label: 'FE Tests', light: testLight(fe, 'jest', hours(170), now, 'fe') },
     { label: 'Drift', light: { color: COLORS.amber, value: '↓46' } },
     { label: 'BE Tests', light: testLight(be, 'dotnet test', hours(2), now) },

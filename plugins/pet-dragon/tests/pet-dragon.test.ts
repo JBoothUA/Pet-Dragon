@@ -15,6 +15,11 @@ import {
   aiHealthLight,
   depsLight,
   bugsLight,
+  sprintJql,
+  sprintNumber,
+  slimIssue,
+  pointsStats,
+  pointsLights,
   bugsJql,
   diagnoseTestPart,
   blockedPrs,
@@ -916,6 +921,83 @@ test('the Bugs query is limited to the pod label, or open to every pod when it i
   expect(bugsJql('C3Pod2')).toContain('labels = "C3Pod2"')
   expect(bugsJql('')).not.toContain('labels')
   expect(bugsJql('C3Pod2')).toContain('created >= -1d')
+})
+
+const S = (id: number, state: string, start: string) => ({ id, name: 'C3 Sprint ' + id, state, startDate: start, endDate: start })
+const sprintIssue = (key: string, status: string, pts: number | null, dev: string | null, sprints: any[]) =>
+  slimIssue({ key, status: { name: status }, customfield_10004: pts, customfield_11232: dev ? { accountId: dev, displayName: dev.toUpperCase() } : null, customfield_10006: sprints })
+const s36 = { ...S(36, 'closed', '2026-11-04T00:00:00Z'), endDate: '2026-11-18T00:00:00Z' }
+const s37 = { ...S(37, 'active', '2026-11-18T00:00:00Z'), endDate: '2026-12-02T00:00:00Z' }
+const s38 = S(38, 'future', '2026-12-02T00:00:00Z')
+
+test('sprint queries are one sprint at a time, scoped to the pod, and skip DISREGARD', () => {
+  expect(sprintJql('C3Pod2', 'open')).toContain('sprint in openSprints()')
+  expect(sprintJql('C3Pod2', 'C3 Sprint 36')).toContain('sprint = "C3 Sprint 36"')
+  expect(sprintJql('', 'open')).not.toContain('labels')
+  expect(sprintJql('C3Pod2', 'open')).toContain('status != DISREGARD')
+  expect(sprintNumber('C3 Sprint 37')).toEqual({ prefix: 'C3 Sprint', n: 37 })
+  expect(sprintNumber('Backlog')).toBeUndefined()
+})
+
+test('pointsStats counts each ticket once, in the sprint it finished in, and only at Dev Done or beyond', () => {
+  const issues = [
+    sprintIssue('C3-1', 'Dev Done', 5, 'me', [s37]),
+    sprintIssue('C3-2', 'COMPLETED', 3, 'me', [s36, s37]),
+    sprintIssue('C3-2', 'COMPLETED', 3, 'me', [s37, s36]),
+    sprintIssue('C3-3', 'In Progress', 8, 'me', [s37]),
+    sprintIssue('C3-4', 'Ready for UAT', 2, 'me', [s36]),
+    sprintIssue('C3-5', 'Dev Done', 13, 'sam', [s37]),
+    sprintIssue('C3-6', 'Code Review', 1, 'zed', [s37]),
+    sprintIssue('C3-7', 'Dev Done', 4, null, [s37]),
+    sprintIssue('C3-8', 'Dev Done', 9, 'me', [s37, s38]),
+  ]
+  const st = pointsStats(issues, 'me')!
+  expect(st.current.name).toBe('C3 Sprint 37')
+  expect(st.me).toBe(5 + 3 + 9)
+  expect(st.tickets.map((t: any) => t.key)).toEqual(['C3-1', 'C3-2', 'C3-8'])
+  expect(st.members.map((m: any) => m.name + m.points)).toEqual(['ME17', 'SAM13', 'ZED0'])
+  expect(st.unowned).toBe(4)
+  expect(st.history).toEqual([{ name: 'C3 Sprint 36', points: 2 }])
+  expect(st.avg).toBe(2)
+  expect(pointsStats(undefined, 'me')).toBeUndefined()
+})
+
+test('the Pts and Pod lights show my points beside my average, the pod low and high, and the tickets counted', () => {
+  const now = Date.parse('2026-11-25T00:00:00Z')
+  const issues = [
+    sprintIssue('C3-1', 'Dev Done', 5, 'me', [s37]),
+    sprintIssue('C3-4', 'Ready for UAT', 10, 'me', [s36]),
+    sprintIssue('C3-5', 'Dev Done', 13, 'sam', [s37]),
+    sprintIssue('C3-6', 'Code Review', 1, 'zed', [s37]),
+  ]
+  const { points, pod } = pointsLights(pointsStats(issues, 'me'), 'C3Pod2', now)
+  expect(points.value).toBe('5 avg 10')
+  expect(points.short).toContain('Counting: C3-1 (5)')
+  expect(points.color).toBe('#1de9b6')
+  expect(pod.value).toBe('0-13')
+  expect(pod.short).toContain('Low: ZED 0')
+  expect(pod.short).toContain('High: SAM 13')
+  expect(pod.short).toContain('You: 5 (2nd of 3)')
+  expect(pod.detail.join('|')).toContain('ME  < you')
+  const ahead = pointsLights(pointsStats([sprintIssue('C3-1', 'Dev Done', 20, 'me', [s37]), sprintIssue('C3-4', 'Dev Done', 10, 'me', [s36])], 'me'), 'C3Pod2', now)
+  expect(ahead.points.color).toBe('#3ddc84')
+  expect(ahead.pod.color).toBe('#3ddc84')
+  const bad = pointsLights(undefined, 'C3Pod2', now)
+  expect(bad.points.value).toBe('?')
+  expect(bad.pod.value).toBe('?')
+})
+
+test('one person with two Jira accounts is one name in the pod, and still me when either account is mine', () => {
+  const st = pointsStats([sprintIssue('C3-1', 'Dev Done', 5, 'old', [s37]), sprintIssue('C3-2', 'Dev Done', 3, 'new', [s37])].map((i) => ({ ...i, dev: { id: i.dev!.id, name: 'Ruben' } })), 'new')!
+  expect(st.members.map((m: any) => m.name + m.points)).toEqual(['Ruben8'])
+  expect(st.me).toBe(8)
+})
+
+test('the Mtgs light says when the next meeting is once nothing is left today', () => {
+  const now = Date.parse('2026-11-16T18:00:00')
+  const m = { outlook: 'on', meetings: [{ start: '2026-11-17T08:00', end: '2026-11-17T08:30', subject: 'Early sync', allDay: false }] }
+  expect(meetLight(m, now).value).toBe('8:00am')
+  expect(meetLight({ outlook: 'on', meetings: [] }, now).value).toBe('0')
 })
 
 test('a PR with a failing pipeline or no activity needs attention on the PRs light', () => {

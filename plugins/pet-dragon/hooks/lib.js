@@ -313,7 +313,9 @@ export function meetLight(m, nowMs) {
   const short = left.length
     ? left.length + ' meeting(s) left today; ' + (Date.parse(next.start) <= nowMs ? 'one is on now' : 'next at ' + clock12(next.start)) + (first ? '. Tomorrow starts at ' + clock12(first.start) : '')
     : 'No more meetings today' + (first ? '. Tomorrow starts at ' + clock12(first.start) : '')
-  return { color: soon ? COLORS.amber : left.length ? COLORS.teal : COLORS.green, value: String(left.length), short, detail, tomorrowFirst: first ? clock12(first.start) : undefined }
+  // Nothing left today: the light says when the next meeting is (tomorrow's first) instead of a bare 0
+  const value = left.length ? String(left.length) : first ? clock12(first.start) : '0'
+  return { color: soon ? COLORS.amber : left.length ? COLORS.teal : COLORS.green, value, short, detail, tomorrowFirst: first ? clock12(first.start) : undefined }
 }
 
 // The end-of-day nudge about tomorrow's first meeting: from 3:30pm once you have been idle a couple of minutes,
@@ -657,6 +659,129 @@ export function bugsLight(json, podLabel, jiraBase) {
   const newest = issues[0]
   const short = issues.length + ' new ' + who + 'bug(s) in the last 24 hours' + (urgent.length ? ', ' + urgent.length + ' urgent (' + urgent.map((i) => i.key).join(', ') + ')' : ', none urgent') + '. Newest: ' + newest.key + ' ' + shorten(newest.summary ?? '', 70)
   return { color: urgent.length ? COLORS.red : COLORS.teal, value: String(issues.length) + (urgent.length ? '!' : ''), short, detail, url }
+}
+
+// ---- Story points per sprint (the Pts and Pod lights) ----
+// Jira fields on keyjira: Story Points customfield_10004, Sprint customfield_10006, Dev1 customfield_11232
+export const SPRINT_FIELDS = 'status,customfield_10004,customfield_10006,customfield_11232'
+// Statuses that mean "reached Dev Done or beyond" (comma separated, matched case-insensitively)
+export const POINTS_DONE_STATUSES = 'Dev Done, Ready for QA, In QA, Ready for UAT, UAT, Ready for Release, Released, COMPLETED'
+
+// sprint: a sprint name ("C3 Sprint 36") or 'open' for the active one. twg caps a query at 100 issues, so each sprint is its own query.
+export function sprintJql(podLabel, sprint) {
+  const pod = podLabel ? ' AND labels = "' + podLabel + '"' : ''
+  const s = sprint === 'open' ? 'sprint in openSprints()' : 'sprint = "' + sprint + '"'
+  return 'project = C3' + pod + ' AND ' + s + ' AND status != DISREGARD'
+}
+
+// "C3 Sprint 37" -> { prefix: 'C3 Sprint', n: 37 }
+export function sprintNumber(name) {
+  const m = /^(.*?)(\d+)\s*$/.exec(String(name ?? ''))
+  return m ? { prefix: m[1].trim(), n: Number(m[2]) } : undefined
+}
+
+// Keeps what pointsStats reads, so a closed sprint caches small
+export function slimIssue(i) {
+  const dev = i?.customfield_11232
+  return {
+    key: i?.key,
+    status: i?.status?.name,
+    points: Number(i?.customfield_10004) || 0,
+    dev: dev?.accountId ? { id: dev.accountId, name: dev.displayName ?? dev.accountId } : undefined,
+    sprints: (Array.isArray(i?.customfield_10006) ? i.customfield_10006 : []).map((s) => ({ id: s.id, name: s.name, state: s.state, start: s.startDate, end: s.endDate })),
+  }
+}
+
+// issues: slimIssue results from several queries (an issue seen twice counts once).
+// A ticket that carried over sits in several sprints; it is credited to the latest one, where it finished. Future sprints are ignored.
+// Returns the current sprint's points per Dev1, my points in each of the last `history` closed sprints, and their average.
+export function pointsStats(issues, meId, doneStatuses = POINTS_DONE_STATUSES, history = 6) {
+  const done = new Set(String(doneStatuses).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))
+  const byKey = new Map()
+  for (const i of Array.isArray(issues) ? issues : []) if (i?.key) byKey.set(i.key, i)
+  const sprints = new Map()
+  const live = (i) => (i.sprints ?? []).filter((s) => s.state === 'active' || s.state === 'closed')
+  for (const i of byKey.values()) for (const s of live(i)) if (!sprints.has(s.id)) sprints.set(s.id, { ...s, people: new Map(), unowned: 0 })
+  for (const i of byKey.values()) {
+    const mine = live(i)
+    if (!mine.length) continue
+    const latest = mine.reduce((a, b) => (String(b.start) > String(a.start) ? b : a))
+    const sp = sprints.get(latest.id)
+    const counts = done.has(String(i.status ?? '').toLowerCase())
+    if (!i.dev) {
+      if (counts) sp.unowned += i.points
+      continue
+    }
+    // Grouped by name: one person can have two Jira accounts (an old and a new one)
+    const p = sp.people.get(i.dev.name) ?? { ids: new Set(), name: i.dev.name, points: 0, tickets: [] }
+    p.ids.add(i.dev.id)
+    if (counts) {
+      p.points += i.points
+      p.tickets.push({ key: i.key, points: i.points, status: i.status })
+    }
+    sp.people.set(i.dev.name, p)
+  }
+  const all = [...sprints.values()].sort((a, b) => String(a.start).localeCompare(String(b.start)))
+  const current = [...all].reverse().find((s) => s.state === 'active') ?? all[all.length - 1]
+  if (!current) return undefined
+  const members = [...current.people.values()].sort((a, b) => b.points - a.points || a.name.localeCompare(b.name))
+  const mineIn = (s) => [...s.people.values()].find((p) => p.ids.has(meId))
+  const pts = (s) => mineIn(s)?.points ?? 0
+  const tickets = (mineIn(current)?.tickets ?? []).slice().sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }))
+  const past = all.filter((s) => s.state === 'closed' && String(s.start) < String(current.start)).slice(-history)
+  const hist = past.map((s) => ({ name: s.name, points: pts(s) }))
+  const avg = hist.length ? hist.reduce((n, h) => n + h.points, 0) / hist.length : undefined
+  return { current, members, meId, tickets, me: pts(current), unowned: current.unowned, history: hist, avg }
+}
+
+const fmtPts = (n) => String(Math.round(n * 10) / 10)
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th')
+
+// The two lights from pointsStats: Pts = my points this sprint beside my average, Pod = the pod's lowest and highest.
+// Pts is green once I have reached my average, teal while on pace for it, amber when well behind where the sprint is.
+export function pointsLights(stats, podLabel, nowMs) {
+  if (!stats) {
+    const bad = { color: COLORS.grey, value: '?', short: 'Could not read sprint points (is twg logged in?)', detail: [] }
+    return { points: bad, pod: bad }
+  }
+  const { current, members, me, avg, history, unowned, tickets = [] } = stats
+  const base = 'https://keyjira.atlassian.net'
+  const counted = tickets.map((t) => t.key + ' (' + t.points + ')')
+  const start = Date.parse(current.start)
+  const end = Date.parse(current.end)
+  const elapsed = Number.isFinite(start) && Number.isFinite(end) && end > start ? Math.min(1, Math.max(0, (nowMs - start) / (end - start))) : 0
+  const days = Number.isFinite(end) ? Math.max(0, Math.ceil((end - nowMs) / 86_400_000)) : undefined
+  const color = avg === undefined ? COLORS.teal : me >= avg ? COLORS.green : me >= avg * elapsed ? COLORS.teal : COLORS.amber
+  const url = 'https://keyjira.atlassian.net/issues/?jql=' + encodeURIComponent(sprintJql(podLabel, 'open'))
+  const points = {
+    color,
+    value: String(me) + (avg !== undefined ? ' avg ' + fmtPts(avg) : ''),
+    short: current.name + ': you have ' + me + ' point(s) at Dev Done or beyond' + (avg !== undefined ? '. Your average over the last ' + history.length + ' sprints is ' + fmtPts(avg) : '') + (days !== undefined ? '. ' + days + ' day(s) left' : '') + (counted.length ? '. Counting: ' + counted.join(', ') : ''),
+    detail: [
+      current.name + ': ' + me + ' point(s) from ' + tickets.length + ' ticket(s)',
+      ...tickets.map((t) => link('  ' + t.key + '  ' + t.points + ' pt(s)  ' + (t.status ?? ''), base + '/browse/' + t.key)),
+      ...(history.length ? ['Last ' + history.length + ' sprints:', ...history.map((h) => '  ' + h.name + '  ' + h.points), 'Average: ' + fmtPts(avg)] : ['No earlier sprints to average yet']),
+      ...(unowned ? [unowned + ' point(s) done with no Dev1 are not counted for anyone'] : []),
+    ],
+    url,
+  }
+  if (!members.length) return { points, pod: { color: COLORS.grey, value: 'n/a', short: 'No ' + (podLabel ? podLabel + ' ' : '') + 'tickets with a Dev1 in ' + current.name, detail: [], url } }
+  const names = (n) => {
+    const who = members.filter((m) => m.points === n).map((m) => m.name)
+    return who.slice(0, 3).join(', ') + (who.length > 3 ? ' +' + (who.length - 3) : '')
+  }
+  const high = members[0].points
+  const low = members[members.length - 1].points
+  const rank = 1 + members.filter((m) => m.points > me).length
+  const total = members.length + (members.some((m) => m.points === me) ? 0 : 1)
+  const pod = {
+    color: rank <= Math.ceil(total / 2) ? COLORS.green : COLORS.teal,
+    value: low + '-' + high,
+    short: 'Low: ' + names(low) + ' ' + low + '. High: ' + names(high) + ' ' + high + '. You: ' + me + ' (' + ordinal(rank) + ' of ' + total + ') in ' + current.name,
+    detail: members.map((m) => String(m.points).padStart(3) + '  ' + m.name + (m.ids.has(stats.meId) ? '  < you' : '')),
+    url,
+  }
+  return { points, pod }
 }
 
 // json: twg prs query for the PRs you authored; runs: twg bb pipeline query, newest first. A PR is blocked when its latest pipeline failed

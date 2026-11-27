@@ -30,6 +30,13 @@ import {
   depsLight,
   bugsLight,
   bugsJql,
+  SPRINT_FIELDS,
+  POINTS_DONE_STATUSES,
+  sprintJql,
+  sprintNumber,
+  slimIssue,
+  pointsStats,
+  pointsLights,
   blockedPrs,
   costLight,
   cacheLight,
@@ -108,6 +115,9 @@ const DEFAULTS = {
   ai_poll_minutes: 5,
   // The Bugs light watches this pod's label only (pods are labels named C3Pod<N>); empty = every pod
   bug_pod_label: 'C3Pod2',
+  // The Pts and Pod lights: which Jira statuses count as done, and how many closed sprints make the average
+  points_done_statuses: POINTS_DONE_STATUSES,
+  points_history_sprints: 6,
   db_scripts_dir: '',
   auto_test_command: '',
   auto_fe_test_command: '',
@@ -132,9 +142,11 @@ const SOURCES = [
   { id: 'jira', label: 'Jira', title: 'Jira', row: 1, col: 0 },
   { id: 'bitbucket', label: 'PRs', title: 'PRs', row: 1, col: 1 },
   { id: 'reviews', label: 'Review', title: 'PRs to review', row: 1, col: 2, parent: 'bitbucket' },
-  { id: 'outlook', label: 'Mail', title: 'Outlook', row: 1, col: 3 },
-  { id: 'meet', label: 'Mtgs', title: 'Meetings today', row: 1, col: 4, parent: 'outlook' },
-  { id: 'teams', label: 'Teams', title: 'Teams', row: 1, col: 5, parent: 'outlook' },
+  { id: 'points', label: 'Pts', title: 'Your story points this sprint, beside your average', row: 1, col: 3 },
+  { id: 'pod', label: 'Pod', title: 'Lowest and highest story points in the pod this sprint', row: 1, col: 4, parent: 'points' },
+  { id: 'outlook', label: 'Mail', title: 'Outlook', row: 6, col: 0 },
+  { id: 'meet', label: 'Mtgs', title: 'Meetings today', row: 6, col: 1, parent: 'outlook' },
+  { id: 'teams', label: 'Teams', title: 'Teams', row: 6, col: 2, parent: 'outlook' },
   { id: 'git', label: 'Git', title: 'Git', row: 2, col: 0 },
   { id: 'pipeline', label: 'CI', title: 'Pipeline for your branch', row: 2, col: 1 },
   { id: 'cidev', label: 'Team', title: 'Pipelines across every open and recent PR', hl: 'Team CI', row: 2, col: 2 },
@@ -212,7 +224,7 @@ function intervalMs(id) {
   if (id === 'seq') return Number(opts.seq_poll_seconds) * 1000
   if (id === 'radar') return Number(opts.radar_poll_minutes) * 60_000
   if (id === 'aiprod') return Number(opts.ai_poll_minutes) * 60_000
-  if (id === 'bugs') return Number(opts.radar_poll_minutes) * 60_000
+  if (id === 'bugs' || id === 'points') return Number(opts.radar_poll_minutes) * 60_000
   if (id === 'pc') return 15_000
   if (id === 'cidev') return Math.max(Number(opts.pipeline_poll_minutes), 5) * 60_000
   return Number(opts.bitbucket_poll_minutes) * 60_000
@@ -303,6 +315,43 @@ async function runPowerShell($, script, args) {
     { timeoutMs: 60_000 },
   )
   return parseJson(r.stdout)
+}
+
+// One twg query for a sprint, trimmed to what the points lights read (twg returns at most 100 issues, so a sprint is one query)
+async function sprintIssues($, jql) {
+  const r = await $.process.run(['twg', 'jira', 'workitem', 'query', '--jql', jql, '--limit', '100', '-o', 'json', '--output-summary', 'none', '--fields', SPRINT_FIELDS], { timeoutMs: 90_000 })
+  const issues = r.exitCode === 0 ? parseJsonAny(r.stdout)?.data?.issues : undefined
+  return Array.isArray(issues) ? issues.map(slimIssue) : undefined
+}
+
+// The active sprint is fetched every poll; the closed ones behind the average change rarely, so each is cached for six hours
+async function pointsFromJira($, now) {
+  const label = opts.bug_pod_label
+  const history = Number(opts.points_history_sprints) || 6
+  const open = await sprintIssues($, sprintJql(label, 'open'))
+  if (!open) return undefined
+  const active = open.flatMap((i) => i.sprints).filter((s) => s.state === 'active').sort((a, b) => String(b.start).localeCompare(String(a.start)))[0]
+  const num = sprintNumber(active?.name)
+  let all = open
+  for (let k = 1; num && k <= history; k++) {
+    const name = num.prefix + ' ' + (num.n - k)
+    const cacheKey = 'points:' + (label || 'all') + ':' + name
+    let got = await $.store.get(cacheKey)
+    if (!got || now - got.at > 6 * 3_600_000) {
+      const issues = await sprintIssues($, sprintJql(label, name))
+      if (!issues) return undefined
+      got = { at: now, issues }
+      await $.store.set(cacheKey, got)
+    }
+    all = all.concat(got.issues)
+  }
+  return pointsStats(all, opts.my_account_id, opts.points_done_statuses, history)
+}
+
+function setPointsLights(stats, now) {
+  const l = pointsLights(stats, opts.bug_pod_label, now)
+  setLight('points', l.points, now)
+  setLight('pod', l.pod, now)
 }
 
 // Results are shared through $.store so several open sessions don't all hit Jira/Bitbucket.
@@ -483,6 +532,8 @@ async function poll($, id, force) {
       const r = await $.process.run(['twg', 'jira', 'workitem', 'query', '--jql', bugsJql(opts.bug_pod_label), '--limit', '30', '-o', 'json', '--output-summary', 'none'], { timeoutMs: 90_000 })
       setLight('bugs', bugsLight(r.exitCode === 0 ? parseJsonAny(r.stdout) : undefined, opts.bug_pod_label), now)
       alertOnRed($, 'bugs', was, 'New urgent bug')
+    } else if (key === 'points') {
+      setPointsLights(await pointsFromJira($, now), now)
     } else if (key === 'seq') {
       const windowMin = Number(opts.seq_window_minutes)
       const from = new Date(now - windowMin * 60_000).toISOString()
@@ -1084,7 +1135,7 @@ function noteTyping($, typing) {
 }
 
 // Anything the person or Claude does wakes the dragon
-const POLL_IDS = ['pc', 'git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs']
+const POLL_IDS = ['pc', 'git', 'coreapi', 'seq', 'radar', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs', 'points']
 function noteActivity($) {
   lastActivity = Date.now()
   if (wasSleepy) {
@@ -1111,7 +1162,8 @@ function checkSleepy($) {
 }
 
 // Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
-const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'bugs'])
+// bitbucket (PRs): your own PRs wait on your peers to review them, so they are not yours to act on. The Review light is.
+const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'bugs', 'bitbucket', 'points', 'pod'])
 const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.hl ?? s.label, light: lights[s.id] })))
 
 function moodNow() {
@@ -1288,6 +1340,7 @@ export function register(on, options) {
     $.clock.after(9_000, () => poll($, 'aiprod'))
     $.clock.after(10_000, () => poll($, 'cidev'))
     $.clock.after(11_000, () => poll($, 'bugs'))
+    $.clock.after(12_000, () => poll($, 'points'))
     // Nobody is here (the dragon is asleep): no point spawning git, twg and PowerShell every few seconds in every open session. Activity wakes it and noteActivity catches the lights up.
     for (const id of POLL_IDS) $.clock.every(intervalMs(id), () => (moodNow().asleep ? undefined : poll($, id)))
     $.clock.every(10 * 60_000, () => loadSkills($))
@@ -1491,7 +1544,7 @@ export function register(on, options) {
       children: [Text({ color: COLORS.ember, bold: true, children: ['[ Standup ]'] })],
     })
 
-    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Rel', 'AI', 'Errs']
+    const ROW_LABELS = ['APIs', 'Work', 'Repo', 'Rel', 'AI', 'Errs', 'Comm']
     const nowMs = Date.now()
     const head = currentHeadline()
     const headlineRow = Box({
@@ -1662,7 +1715,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(2), lightRow(5), lightRow(4), lightRow(3), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(6), lightRow(2), lightRow(5), lightRow(4), lightRow(3), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
@@ -1747,7 +1800,7 @@ export function register(on, options) {
             hotkey: 'r',
             plain: true,
             onPress: () => {
-              for (const id of ['git', 'coreapi', 'seq', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs']) poll($, id, true)
+              for (const id of ['git', 'coreapi', 'seq', 'outlook', 'jira', 'pipeline', 'bitbucket', 'aiprod', 'cidev', 'bugs', 'points']) poll($, id, true)
             },
           }),
           Button({
