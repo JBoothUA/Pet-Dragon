@@ -51,6 +51,10 @@ import {
   parseTestRun,
   isTestCommand,
   testLight,
+  isFullSuiteCommand,
+  runTestPart,
+  startupTestRecord,
+  TEST_PROBLEM_VALUES,
   testKind,
   indexSkills,
   suggestSkills,
@@ -566,6 +570,83 @@ test('Core light says which database it uses and whether the other is ready to s
   expect(docker.value).toBe('docker db')
   expect(docker.dockerReady).toBe(true)
   expect(docker.localReady).toBe(false)
+})
+
+test('A remembered scoped run is not a suite total, so a restart re-runs the full suite', () => {
+  expect(isFullSuiteCommand('npm run test, full suite in 24 parts')).toBe(true)
+  expect(isFullSuiteCommand('dotnet test, all 12 test projects')).toBe(true)
+  expect(isFullSuiteCommand('npm test')).toBe(true)
+  expect(isFullSuiteCommand('npm run test -- --silent --maxWorkers=4')).toBe(true)
+  expect(isFullSuiteCommand('dotnet test --nologo')).toBe(true)
+  expect(isFullSuiteCommand('npx jest --maxWorkers=4 src/common/contexts/ColumnsVisibilityContext')).toBe(false)
+  expect(isFullSuiteCommand('npm test -- -t "name"')).toBe(false)
+  expect(isFullSuiteCommand('dotnet test bff/Tests/Phoenix.BFF.UnitTests/Phoenix.BFF.UnitTests.csproj --nologo')).toBe(false)
+  expect(isFullSuiteCommand(undefined)).toBe(false)
+})
+
+const DOTNET = 'dotnet test X.csproj --nologo'
+const GOOD = 'Passed!  - Failed:     0, Passed:    12, Skipped:     0, Total:    12'
+const BAD = 'error MSB3026: Could not copy, the file is locked'
+const fakeRuns = (...results: Array<{ output: string; elapsedMs?: number }>) => {
+  let calls = 0
+  const runOnce = async () => ({ code: 0, elapsedMs: 1000, ...results[Math.min(calls++, results.length - 1)] })
+  return { runOnce, calls: () => calls }
+}
+
+test('A test part with no summary is retried once, and counted when the retry reports', async () => {
+  const f = fakeRuns({ output: BAD }, { output: GOOD })
+  const got = await runTestPart({ kind: 'be', command: DOTNET, runOnce: f.runOnce, ceilingMs: 60_000 })
+  expect(got).toEqual({ counted: { passed: 12, failed: 0 }, attempts: 2 })
+  expect(f.calls()).toBe(2)
+})
+
+test('A test part that gives no summary twice is a problem, not a count', async () => {
+  const f = fakeRuns({ output: BAD })
+  const got = await runTestPart({ kind: 'be', command: DOTNET, runOnce: f.runOnce, ceilingMs: 60_000 })
+  expect(got.attempts).toBe(2)
+  expect(got.counted).toBeUndefined()
+  expect(TEST_PROBLEM_VALUES).toContain(got.problem?.value)
+})
+
+test('A passing part is run once; a timed-out part and a helper with no tests are not retried', async () => {
+  const pass = fakeRuns({ output: GOOD })
+  expect((await runTestPart({ kind: 'be', command: DOTNET, runOnce: pass.runOnce, ceilingMs: 60_000 })).attempts).toBe(1)
+  const slow = fakeRuns({ output: BAD, elapsedMs: 60_000 })
+  const timedOut = await runTestPart({ kind: 'be', command: DOTNET, runOnce: slow.runOnce, ceilingMs: 60_000 })
+  expect(timedOut.attempts).toBe(1)
+  expect(timedOut.problem).toBeDefined()
+  const helper = fakeRuns({ output: 'No test is available in Helpers.dll' })
+  expect(await runTestPart({ kind: 'be', command: DOTNET, runOnce: helper.runOnce, ceilingMs: 60_000 })).toEqual({ empty: true, attempts: 1 })
+})
+
+test('Only a locked file or a runner with no verdict is retried; a compile error is not', async () => {
+  const build = fakeRuns({ output: 'src/A.cs(1,1): error CS1002: ; expected' })
+  const got = await runTestPart({ kind: 'be', command: DOTNET, runOnce: build.runOnce, ceilingMs: 60_000 })
+  expect(got.attempts).toBe(1)
+  expect(got.problem?.value).toBe('build')
+  const seen: string[] = []
+  const locked = fakeRuns({ output: BAD }, { output: GOOD })
+  await runTestPart({ kind: 'be', command: DOTNET, runOnce: locked.runOnce, ceilingMs: 60_000, onRetry: (p: { value: string }) => seen.push(p.value) })
+  expect(seen).toEqual(['locked'])
+})
+
+test('A full run is recognized through cd, pipes and a solution file, and a custom auto command is trusted', () => {
+  expect(isFullSuiteCommand('cd phoenix-ui && npm test 2>&1 | tail -20')).toBe(true)
+  expect(isFullSuiteCommand('dotnet test Phoenix.sln --no-build')).toBe(true)
+  expect(isFullSuiteCommand('npx jest')).toBe(true)
+  expect(isFullSuiteCommand('cd phoenix-ui && npx jest src/foo')).toBe(false)
+  const custom = { run: { runner: 'dotnet', passed: 900, failed: 0 }, command: 'my-test-script --all', at: 1 }
+  expect(startupTestRecord(custom)).toBeUndefined()
+  expect(startupTestRecord({ ...custom, full: true })).toBeDefined()
+})
+
+test('After a restart only a full-suite run with tests is remembered', () => {
+  const rec = (passed: number, command: string) => ({ run: { runner: 'jest', passed, failed: 0 }, command, at: 1 })
+  expect(startupTestRecord(rec(5120, 'npm run test, full suite in 24 parts'))).toBeDefined()
+  expect(startupTestRecord(rec(4, 'npx jest --maxWorkers=4 src/common/contexts/ColumnsVisibilityContext'))).toBeUndefined()
+  expect(startupTestRecord(rec(0, 'npm run test, full suite in 24 parts'))).toBeUndefined()
+  expect(startupTestRecord(undefined)).toBeUndefined()
+  expect(startupTestRecord({ run: undefined, command: 'npm test', at: 1 })).toBeUndefined()
 })
 
 test('Tests light remembers the last run and shows how old it is', () => {

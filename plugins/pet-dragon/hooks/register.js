@@ -39,7 +39,8 @@ import {
   teamCiLight,
   hangfireLight,
   seqLight,
-  diagnoseTestPart,
+  runTestPart,
+  startupTestRecord,
   TEST_PROBLEM_VALUES,
   radarLight,
   releaseForecast,
@@ -684,13 +685,14 @@ const TEST_KINDS = {
 }
 
 // Shows a finished run on its light and remembers it for the next session
-async function recordTestRun($, run, command, at) {
+// full: Dragon ran the whole suite itself, so a restart keeps the record whatever the command looks like (a custom auto_test_command)
+async function recordTestRun($, run, command, at, full = false) {
   const kind = testKind(run)
   if (!kind) return
   // A run that found no tests (a -t filter or -o with nothing related) says nothing about the suite: keep the last real result
   if (run.passed + run.failed === 0 && /^\d+ (pass|fail)/.test(lights[TEST_KINDS[kind].light]?.value ?? '')) return
   setLight(TEST_KINDS[kind].light, testLight(run, command, at, at, kind), at)
-  await $.store.set(TEST_KINDS[kind].store + repoRoot, { run, command, at })
+  await $.store.set(TEST_KINDS[kind].store + repoRoot, { run, command, at, ...(full ? { full: true } : {}) })
 }
 
 // npm and npx are .cmd shims on Windows, which cannot be started without a shell
@@ -714,7 +716,7 @@ async function autoTestPlan($, kind) {
     // One folder per checkout, because obj/<project> names would otherwise collide between worktrees.
     const tmp = ((await $.env.get('TEMP')) ?? 'C:\\Windows\\Temp').replace(/[\\/]+$/, '')
     const artifacts = isWindows ? tmp + '\\pet-dragon-artifacts\\' + artifactsFolderName(repoRoot) : undefined
-    const parts = projects.map((p) => ({ argv: lowPriority($, ['dotnet', 'test', p, '--nologo', ...(artifacts ? ['--artifacts-path', artifacts] : [])]), label: p.split('/').pop().replace(/\.csproj$/, '') }))
+    const parts = projects.map((p) => ({ argv: lowPriority($, ['dotnet', 'test', p, '--nologo', '-m:2', ...(artifacts ? ['--artifacts-path', artifacts] : [])]), label: p.split('/').pop().replace(/\.csproj$/, '') }))
     return parts.length ? { cwd: repoRoot, shown: 'dotnet test, all ' + parts.length + ' test projects', parts } : undefined
   }
   if (!(await list('phoenix-ui/package.json')).length) return undefined
@@ -785,20 +787,16 @@ async function runTestKind($, kind, force) {
         $.ui.invalidate('ui.render')
       }
       show(0, '')
-      const r = await runPart($, part.argv, plan.cwd, show)
-      const run = parseTestRun(part.argv.join(' '), r.output)
-      if (run && testKind(run) === kind) {
-        total.passed += run.passed
-        total.failed += run.failed
-      } else if (kind === 'be' && /No test is available|no test source/i.test(r.output)) {
-        // A helper project that carries no tests adds nothing
-      } else {
-        const why = diagnoseTestPart(r.output, r.code, r.elapsedMs, PART_CEILING_MS)
-        problems.push({ label: part.label || 'run', value: why.value, why: why.why, line: why.line })
+      const got = await runTestPart({ kind, command: part.argv.join(' '), runOnce: () => runPart($, part.argv, plan.cwd, show), ceilingMs: PART_CEILING_MS, onRetry: (why) => show(0, 'Retrying once (' + why.value + '): ' + shorten(why.line ?? why.why, 80)) })
+      if (got.counted) {
+        total.passed += got.counted.passed
+        total.failed += got.counted.failed
+      } else if (got.problem) {
+        problems.push({ label: part.label || 'run', value: got.problem.value, why: got.problem.why, line: got.problem.line })
       }
     }
     if (problems.length === 0) {
-      await recordTestRun($, { runner: kind === 'be' ? 'dotnet' : 'jest', passed: total.passed, failed: total.failed }, plan.shown, await $.clock.now())
+      await recordTestRun($, { runner: kind === 'be' ? 'dotnet' : 'jest', passed: total.passed, failed: total.failed }, plan.shown, await $.clock.now(), true)
       return
     }
     // Some parts gave no result. Anything that did fail is still the headline; otherwise show the count that is known, marked partial.
@@ -1261,8 +1259,8 @@ export function register(on, options) {
     // Before the split the one record held whichever runner ran last, so a Jest run may still sit in the backend slot
     const records = { be: testKind(beRecord?.run) === 'be' ? beRecord : undefined, fe: feRecord ?? (testKind(beRecord?.run) === 'fe' ? beRecord : undefined) }
     for (const kind of ['be', 'fe']) {
-      // A run of zero tests (an old changed-files-only run) says nothing, so it counts as not run and the full suite starts
-      const rec = records[kind]?.run && records[kind].run.passed + records[kind].run.failed === 0 ? undefined : records[kind]
+      // A run of zero tests, or a scoped run that is no suite total (one file, -t, --filter), says nothing: it counts as not run and the full suite starts
+      const rec = startupTestRecord(records[kind])
       setLight(TEST_KINDS[kind].light, rec?.run ? testLight(rec.run, rec.command, rec.at, startNow, kind) : testLight(undefined, undefined, undefined, undefined, kind), startNow)
     }
     suggestionsOff = opts.skill_suggestions === 'off' || (await $.store.get('suggestions-off')) === true

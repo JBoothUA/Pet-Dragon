@@ -484,6 +484,54 @@ export function artifactsFolderName(repoRoot) {
   return last.replace(/[^A-Za-z0-9._-]/g, '_') || 'repo'
 }
 
+// True when a remembered run covers the whole suite: Dragon's own automatic run, or a plain npm test / dotnet test with no path or filter.
+// A scoped run (one file, -t, --filter) is not a suite total, so a restart must not keep showing it in place of one.
+export function isFullSuiteCommand(command) {
+  let c = String(command ?? '').trim()
+  if (/^(dotnet test, all \d+ test projects|npm run test, full suite in \d+ parts)$/.test(c)) return true
+  // What was typed around the run does not change its scope: "cd phoenix-ui && npm test 2>&1 | tail -20"
+  c = (c.split('&&').pop() ?? '').split('|')[0].replace(/\s2>&1/g, '').trim()
+  return /^(npm\s+(run\s+)?test|npx\s+jest|dotnet\s+test(\s+\S+\.slnx?)?)(\s+(--nologo|--silent|--no-build|--no-restore|--maxWorkers=\d+|--shard=\d+\/\d+|-m:\d+|--))*\s*$/.test(c)
+}
+
+// A C# helper project with no tests prints this; it adds nothing and is no problem
+const NO_TESTS_PROJECT = /No test is available|no test source/i
+
+// What a remembered run is worth after a restart: undefined (counts as not run, so the full suite starts) for a run of zero tests
+// or a scoped run that is no suite total; otherwise the record itself.
+// rec.full: Dragon ran the whole suite itself (its own plan or the user's auto_test_command), whatever the command looks like.
+export function startupTestRecord(rec) {
+  if (!rec?.run) return undefined
+  return rec.run.passed + rec.run.failed === 0 || !(rec.full === true || isFullSuiteCommand(rec.command)) ? undefined : rec
+}
+
+// Only these causes are worth a second try: a file another process held, or a runner that just stopped without a verdict.
+// A compile error, missing modules, out of memory, a crash or a timeout would fail the same way again.
+const RETRYABLE_PROBLEMS = ['locked', 'no result']
+
+// Runs one part of a suite and says what it gave. runOnce() starts the part and resolves { code, output, elapsedMs }.
+// A part with no summary is retried once when the cause is RETRYABLE_PROBLEMS: a locked DLL or a build that collided with another run is
+// usually gone the second time. onRetry(problem) lets the caller say so, since the retry otherwise looks like a stalled light.
+// Returns { counted: { passed, failed } } | { empty: true } | { problem: { value, why, line } }, each with the number of attempts.
+export async function runTestPart({ kind, command, runOnce, ceilingMs, onRetry }) {
+  let attempts = 1
+  let r = await runOnce()
+  let run = parseTestRun(command, r.output)
+  const noSummary = () => !(run && testKind(run) === kind)
+  if (noSummary() && !(kind === 'be' && NO_TESTS_PROJECT.test(r.output))) {
+    const first = diagnoseTestPart(r.output, r.code, r.elapsedMs, ceilingMs)
+    if (RETRYABLE_PROBLEMS.includes(first.value)) {
+      attempts++
+      onRetry?.(first)
+      r = await runOnce()
+      run = parseTestRun(command, r.output)
+    }
+  }
+  if (!noSummary()) return { counted: { passed: run.passed, failed: run.failed }, attempts }
+  if (kind === 'be' && NO_TESTS_PROJECT.test(r.output)) return { empty: true, attempts }
+  return { problem: diagnoseTestPart(r.output, r.code, r.elapsedMs, ceilingMs), attempts }
+}
+
 // at / nowMs: when the run happened and now, so a run remembered from an earlier session shows its age
 // kind: 'be' (default) or 'fe', only to word the "no run yet" message
 export function testLight(run, command, at, nowMs, kind = 'be') {
