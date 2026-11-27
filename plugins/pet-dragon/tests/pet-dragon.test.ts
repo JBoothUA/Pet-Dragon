@@ -959,6 +959,12 @@ test('pointsStats counts each ticket once, in the sprint it finished in, and onl
   expect(st.unowned).toBe(4)
   expect(st.history).toEqual([{ name: 'C3 Sprint 36', points: 2 }])
   expect(st.avg).toBe(2)
+  // A sprint where I had nothing is not averaged in
+  const s35 = { ...S(35, 'closed', '2026-10-21T00:00:00Z'), endDate: '2026-11-04T00:00:00Z' }
+  const s34 = { ...S(34, 'closed', '2026-10-07T00:00:00Z'), endDate: '2026-10-21T00:00:00Z' }
+  const gaps = pointsStats([sprintIssue('C3-1', 'Dev Done', 5, 'me', [s37]), sprintIssue('C3-4', 'COMPLETED', 17, 'me', [s36]), sprintIssue('C3-9', 'COMPLETED', 3, 'me', [s35]), sprintIssue('C3-10', 'COMPLETED', 8, 'sam', [s34])], 'me')!
+  expect(gaps.history.map((h: any) => h.points)).toEqual([3, 17])
+  expect(gaps.avg).toBe(10)
   expect(pointsStats(undefined, 'me')).toBeUndefined()
 })
 

@@ -729,7 +729,8 @@ export function pointsStats(issues, meId, doneStatuses = POINTS_DONE_STATUSES, h
   const pts = (s) => mineIn(s)?.points ?? 0
   const tickets = (mineIn(current)?.tickets ?? []).slice().sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }))
   const past = all.filter((s) => s.state === 'closed' && String(s.start) < String(current.start)).slice(-history)
-  const hist = past.map((s) => ({ name: s.name, points: pts(s) }))
+  // A sprint with none of my points is left out of the average (I was not delivering in it)
+  const hist = past.map((s) => ({ name: s.name, points: pts(s) })).filter((h) => h.points > 0)
   const avg = hist.length ? hist.reduce((n, h) => n + h.points, 0) / hist.length : undefined
   return { current, members, meId, tickets, me: pts(current), unowned: current.unowned, history: hist, avg }
 }
@@ -756,11 +757,11 @@ export function pointsLights(stats, podLabel, nowMs) {
   const points = {
     color,
     value: String(me) + (avg !== undefined ? ' avg ' + fmtPts(avg) : ''),
-    short: current.name + ': you have ' + me + ' point(s) at Dev Done or beyond' + (avg !== undefined ? '. Your average over the last ' + history.length + ' sprints is ' + fmtPts(avg) : '') + (days !== undefined ? '. ' + days + ' day(s) left' : '') + (counted.length ? '. Counting: ' + counted.join(', ') : ''),
+    short: current.name + ': you have ' + me + ' point(s) at Dev Done or beyond' + (avg !== undefined ? '. Your average over ' + history.length + ' of the last sprints (those with points) is ' + fmtPts(avg) : '') + (days !== undefined ? '. ' + days + ' day(s) left' : '') + (counted.length ? '. Counting: ' + counted.join(', ') : ''),
     detail: [
       current.name + ': ' + me + ' point(s) from ' + tickets.length + ' ticket(s)',
       ...tickets.map((t) => link('  ' + t.key + '  ' + t.points + ' pt(s)  ' + (t.status ?? ''), base + '/browse/' + t.key)),
-      ...(history.length ? ['Last ' + history.length + ' sprints:', ...history.map((h) => '  ' + h.name + '  ' + h.points), 'Average: ' + fmtPts(avg)] : ['No earlier sprints to average yet']),
+      ...(history.length ? ['Recent sprints where you had points (empty ones are skipped):', ...history.map((h) => '  ' + h.name + '  ' + h.points), 'Average: ' + fmtPts(avg)] : ['No earlier sprints to average yet']),
       ...(unowned ? [unowned + ' point(s) done with no Dev1 are not counted for anyone'] : []),
     ],
     url,
