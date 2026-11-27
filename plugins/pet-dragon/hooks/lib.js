@@ -597,11 +597,13 @@ export function aiHealthLight(env, h) {
   const slow = h.bp95 > 0 && h.p95 >= h.bp95 * 2.5 && h.p95 > 1000
   const value = now.toFixed(now < 10 ? 1 : 0) + '%'
   if (now >= Math.max(2, base * 3)) return { color: COLORS.red, value, short: name + ' failures spiking: ' + now.toFixed(1) + '% of requests failed in the last 15 minutes (normal ' + base.toFixed(1) + '%)', detail }
-  if (now >= Math.max(1, base * 2) || slow) {
-    const why = slow ? 'p95 ' + Math.round(h.p95) + ' ms is ' + (h.p95 / h.bp95).toFixed(1) + 'x normal' : now.toFixed(1) + '% failing, normal ' + base.toFixed(1) + '%'
+  // Slow responses alone make it amber only while something is failing: the light shows the failure rate, so 0.0% is always green
+  const slowNote = slow ? 'p95 ' + Math.round(h.p95) + ' ms is ' + (h.p95 / h.bp95).toFixed(1) + 'x normal' : ''
+  if (now >= Math.max(1, base * 2) || (slow && now > 0)) {
+    const why = slow ? slowNote : now.toFixed(1) + '% failing, normal ' + base.toFixed(1) + '%'
     return { color: COLORS.amber, value, short: name + ' is off its normal: ' + why, detail }
   }
-  return { color: COLORS.green, value, short: name + ' normal: ' + now.toFixed(1) + '% failed over ' + h.n + ' requests in the last 15 minutes', detail }
+  return { color: COLORS.green, value, short: name + ' normal: ' + now.toFixed(1) + '% failed over ' + h.n + ' requests in the last 15 minutes' + (slowNote ? ' (but slow: ' + slowNote + ')' : ''), detail }
 }
 
 // envs: { prod, qa, uat } from ai-probe.ps1; the count and newest message of Hangfire errors in the last 6 hours

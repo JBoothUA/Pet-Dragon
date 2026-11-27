@@ -819,8 +819,12 @@ test('aiHealthLight is quiet with no traffic and grey when unreadable', () => {
   expect(aiHealthLight('prod', undefined).value).toBe('?')
 })
 
-test('aiHealthLight flags a slow p95 as amber', () => {
-  const slow = aiHealthLight('prod', { n: 80, f: 0, p95: 6000, bn: 10000, bf: 10, bp95: 1500, top: [] })
+test('aiHealthLight: a slow p95 is amber only while requests fail, and 0.0% is always green', () => {
+  const clean = aiHealthLight('prod', { n: 80, f: 0, p95: 6000, bn: 10000, bf: 10, bp95: 1500, top: [] })
+  expect(clean.value).toBe('0.0%')
+  expect(clean.color).toBe('#3ddc84')
+  expect(clean.short).toContain('p95')
+  const slow = aiHealthLight('prod', { n: 80, f: 1, p95: 6000, bn: 10000, bf: 10, bp95: 1500, top: [] })
   expect(slow.color).toBe('#ffc107')
   expect(slow.short).toContain('p95')
 })
