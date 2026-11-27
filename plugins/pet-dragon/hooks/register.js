@@ -1717,7 +1717,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(6, standupButton), lightRow(1), lightRow(2), lightRow(0), lightRow(5), lightRow(4), lightRow(3), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(6, standupButton), lightRow(1), lightRow(2), lightRow(5), lightRow(4), lightRow(0), lightRow(3), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
