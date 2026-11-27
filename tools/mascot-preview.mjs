@@ -1,33 +1,59 @@
 // Draws Dragon in every mood color, in real terminal colors, from the plugin's own frames.
 //   node tools/mascot-preview.mjs            every mood (working moods show the downstroke)
 //   node tools/mascot-preview.mjs --animate  the working animation for a few seconds
-import { IDLE, FLAP, FLAP_MS, MOODS, COLORS, SPRITE_WIDTH, spriteRows, testLight, machineLight, cacheLight, ctxLight, headline } from '../plugins/pet-dragon/hooks/lib.js'
+import { IDLE, FLAP, SLEEP, FLAP_MS, MOODS, COLORS, PAL, SPRITE_WIDTH, spriteRows, rotateHue, shade, testLight, machineLight, cacheLight, ctxLight, headline } from '../plugins/pet-dragon/hooks/lib.js'
 
 const RESET = '\x1b[0m'
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(';')
 
-const draw = (frame, body) =>
+// hovered: how the dragon looks under the pointer, every color of every pixel rotated by rotateHue (register.js does the same per run)
+const draw = (frame, body, hovered = false) =>
   spriteRows(frame, body).map(
     (runs) =>
       runs
-        .map((s) => (s.color ? '\x1b[38;2;' + rgb(s.color) + 'm' : '') + (s.backgroundColor ? '\x1b[48;2;' + rgb(s.backgroundColor) + 'm' : '') + s.text + RESET)
+        .map((s) => {
+          const fg = s.color && (hovered ? rotateHue(s.color) : s.color)
+          const bg = s.backgroundColor && (hovered ? rotateHue(s.backgroundColor) : s.backgroundColor)
+          return (fg ? '\x1b[38;2;' + rgb(fg) + 'm' : '') + (bg ? '\x1b[48;2;' + rgb(bg) + 'm' : '') + s.text + RESET
+        })
         .join(''),
   )
 
 const COL = 24
+const head = (t) => console.log('\n\x1b[1m  ' + t + RESET)
+const swatch = (hex, label, note = '') => '  \x1b[38;2;' + rgb(hex) + 'm████' + RESET + ' ' + label.padEnd(24) +'\x1b[2m' + hex + '  ' + note + RESET
+
+// Sprite blocks side by side, each with a caption line above
+function row(blocks) {
+  console.log('')
+  console.log('  ' + blocks.map((b) => b.caption + ' '.repeat(Math.max(0, COL - b.plain.length))).join(''))
+  for (let r = 0; r < blocks[0].lines.length; r++) console.log('  ' + blocks.map((b) => b.lines[r] + ' '.repeat(COL - SPRITE_WIDTH)).join(''))
+}
 
 function printAll() {
+  head('Moods: the body takes the mood color, and each mood is shown again as it looks under the pointer')
   const entries = Object.entries(MOODS)
-  for (let start = 0; start < entries.length; start += 4) {
-    const group = entries.slice(start, start + 4)
-    console.log('')
-    console.log('  ' + group.map(([, m]) => '\x1b[1m\x1b[38;2;' + rgb(m.color) + 'm' + m.label.padEnd(COL) + RESET).join(''))
-    const blocks = group.map(([key, m]) => draw(key === 'working' || key === 'tool' ? FLAP[2] : IDLE, m.color))
-    for (let r = 0; r < blocks[0].length; r++) {
-      console.log('  ' + blocks.map((b) => b[r] + ' '.repeat(COL - SPRITE_WIDTH)).join(''))
+  for (let start = 0; start < entries.length; start += 2) {
+    const blocks = []
+    for (const [key, m] of entries.slice(start, start + 2)) {
+      const frame = key === 'working' || key === 'tool' ? FLAP[2] : key === 'sleepy' ? SLEEP : IDLE
+      const bold = '\x1b[1m\x1b[38;2;' + rgb(m.color) + 'm'
+      blocks.push({ caption: bold + m.label + RESET, plain: m.label, lines: draw(frame, m.color) })
+      const hov = rotateHue(m.color)
+      blocks.push({ caption: '\x1b[1m\x1b[38;2;' + rgb(hov) + 'm' + 'hover ' + RESET + '\x1b[2m' + m.color + '→' + hov + RESET, plain: 'hover ' + m.color + '→' + hov, lines: draw(frame, m.color, true) })
     }
+    row(blocks)
   }
-  console.log('\n\x1b[2m  Body = mood color. Belly, eye, mouth and feet stay the same.\x1b[0m')
+  head('Wing flap: the four frames of the working animation')
+  row(FLAP.map((f, i) => ({ caption: '\x1b[2mframe ' + (i + 1) + RESET, plain: 'frame ' + (i + 1), lines: draw(f, MOODS.working.color) })))
+  head('Every color on the dragon')
+  const body = MOODS.working.color
+  console.log(swatch(body, 'body', 'R: the mood color'))
+  console.log(swatch(shade(body), 'wings', 'S: a darker shade of the body (70%)'))
+  const parts = { C: 'belly', W: 'eye white', k: 'pupil', d: 'feet', m: 'mouth', h: 'horns, crest', s: 'spark', p: 'pink', n: 'nostril', o: 'outline' }
+  for (const [ch, name] of Object.entries(parts)) if (PAL[ch]) console.log(swatch(PAL[ch], name, ch + ': fixed, the same in every mood'))
+  head('Mood colors in priority order (the first state that applies wins)')
+  for (const [, m] of entries) console.log(swatch(m.color, m.label, m.short))
   printLights()
 }
 
@@ -53,6 +79,12 @@ function printLights() {
     ['grey', 'off, not set up, or not checked yet'],
   ]
   for (const [key, text] of legend) console.log('  \x1b[38;2;' + rgb(COLORS[key]) + 'm██ ' + key.padEnd(8) + RESET + '\x1b[2m' + COLORS[key] + '  ' + text + RESET)
+  head('A light that just changed flashes for about three seconds: the dot fills and the value inverts, every other step')
+  const flashPair = (name, light) => '  \x1b[38;2;' + rgb(light.color) + 'm● ' + name + ' ' + light.value + RESET + '   \x1b[38;2;' + rgb(light.color) + 'm◉ ' + name + RESET + ' \x1b[38;2;17;17;17m\x1b[48;2;' + rgb(light.color) + 'm ' + light.value + ' ' + RESET
+  console.log(flashPair('PC', machineLight({ ramTotalMb: 65536, ramFreeMb: 30000, cpuPct: 20, diskTotalGb: 476, diskFreeGb: 20, drive: 'C:' })))
+  console.log(flashPair('PRs', { color: COLORS.amber, value: '4!2' }))
+  console.log(flashPair('CI', { color: COLORS.red, value: 'failed' }))
+  console.log(flashPair('Core', { color: COLORS.teal, value: 'docker db' }))
   head('Test lights')
   console.log(chip('BE Tests', testLight(be, 'dotnet test, all 12 test projects', hours(2), now)))
   console.log(chip('BE Tests', testLight(be, 'dotnet test, all 12 test projects', hours(30), now)))
