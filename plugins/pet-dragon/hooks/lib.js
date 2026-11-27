@@ -494,6 +494,15 @@ export function isFullSuiteCommand(command) {
   return /^(npm\s+(run\s+)?test|npx\s+jest|dotnet\s+test(\s+\S+\.slnx?)?)(\s+(--nologo|--silent|--no-build|--no-restore|--maxWorkers=\d+|--shard=\d+\/\d+|-m:\d+|--))*\s*$/.test(c)
 }
 
+// The lines of a part's output that say what failed: the runner's failure lines first (Jest FAIL / bullet, dotnet Failed, build errors),
+// then the last few lines for its verdict. Kept short, because it goes in the plugin store.
+export function failureExcerpt(output, failLines = 40, tailLines = 15) {
+  const lines = String(output ?? '').split('\n').map((l) => l.trimEnd()).filter((l) => l.trim())
+  const fails = lines.filter((l) => /^\s*(FAIL\b|●|Failed\b|\[FAIL\]|.*\berror (CS|MSB)\d+)/.test(l)).slice(0, failLines)
+  const tail = lines.slice(-tailLines)
+  return [...new Set([...fails, ...tail])].map((l) => l.slice(0, 240)).join('\n')
+}
+
 // A C# helper project with no tests prints this; it adds nothing and is no problem
 const NO_TESTS_PROJECT = /No test is available|no test source/i
 

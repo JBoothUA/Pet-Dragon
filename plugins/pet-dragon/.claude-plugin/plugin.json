@@ -1,6 +1,6 @@
 {
   "name": "pet-dragon",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Dragon, a little winged dragon, above your prompt: it changes color with the Claude session state (and dozes off when idle), shows Jira / Bitbucket / Outlook / Teams / CoreAPI / git / pipeline / test / Seq status lights, offers related skills before you send a prompt, and writes your standup with /dragon standup.",
   "author": { "name": "C3 team" },
   "userConfig": {

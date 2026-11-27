@@ -40,6 +40,7 @@ import {
   hangfireLight,
   seqLight,
   runTestPart,
+  failureExcerpt,
   startupTestRecord,
   TEST_PROBLEM_VALUES,
   radarLight,
@@ -777,6 +778,7 @@ async function runTestKind($, kind, force) {
     const count = plan.parts.length
     const total = { passed: 0, failed: 0 }
     const problems = []
+    const failures = []
     for (let i = 0; i < count; i++) {
       const part = plan.parts[i]
       // The value is the running TOTAL, like the finished light; which part is running goes in the hover
@@ -787,14 +789,18 @@ async function runTestKind($, kind, force) {
         $.ui.invalidate('ui.render')
       }
       show(0, '')
-      const got = await runTestPart({ kind, command: part.argv.join(' '), runOnce: () => runPart($, part.argv, plan.cwd, show), ceilingMs: PART_CEILING_MS, onRetry: (why) => show(0, 'Retrying once (' + why.value + '): ' + shorten(why.line ?? why.why, 80)) })
+      let last
+      const got = await runTestPart({ kind, command: part.argv.join(' '), runOnce: async () => (last = await runPart($, part.argv, plan.cwd, show)), ceilingMs: PART_CEILING_MS, onRetry: (why) => show(0, 'Retrying once (' + why.value + '): ' + shorten(why.line ?? why.why, 80)) })
       if (got.counted) {
         total.passed += got.counted.passed
         total.failed += got.counted.failed
       } else if (got.problem) {
         problems.push({ label: part.label || 'run', value: got.problem.value, why: got.problem.why, line: got.problem.line })
       }
+      // Keep what failed so it can be read afterwards: the light only shows a count, and the output is gone once the part ends
+      if (got.problem || got.counted?.failed > 0) failures.push({ part: part.label || 'run', cause: got.problem?.value ?? 'test failures', failed: got.counted?.failed, excerpt: failureExcerpt(last?.output) })
     }
+    await $.store.set('test-failures:' + kind + ':' + repoRoot, { at: await $.clock.now(), command: plan.shown, failures })
     if (problems.length === 0) {
       await recordTestRun($, { runner: kind === 'be' ? 'dotnet' : 'jest', passed: total.passed, failed: total.failed }, plan.shown, await $.clock.now(), true)
       return
