@@ -127,15 +127,14 @@ function printLights() {
   console.log(chip('Mtgs', meetLight({ outlook: 'on', meetings: [mtg('2026-11-26T12:10', '2026-11-26T12:40')] }, at)))
   console.log(chip('Mtgs', meetLight({ outlook: 'on', meetings: [mtg('2026-11-27T08:00', '2026-11-27T08:30')] }, at)))
   console.log(chip('Mtgs', meetLight({ outlook: 'on', meetings: [] }, at)))
-  head('Headline under the dragon (your own PRs are not counted: peers review those)')
+  head('Headline under the dragon (not counted: your own PRs, since peers review those, and the PC light)')
   const items = [
-    { label: 'PC', light: pc(20) },
     { label: 'Review', light: { color: COLORS.amber, value: '2' } },
     { label: 'FE Tests', light: testLight(fe, 'jest', hours(170), now, 'fe') },
     { label: 'Drift', light: { color: COLORS.amber, value: '↓46' } },
     { label: 'BE Tests', light: testLight(be, 'dotnet test', hours(2), now) },
   ]
-  for (const list of [items, items.slice(4), items.filter((i) => i.label === 'PC')]) {
+  for (const list of [items, items.slice(3), items.filter((i) => i.label === 'Review')]) {
     const h = headline(list)
     console.log('  \x1b[38;2;' + rgb(h.color) + 'm' + h.text + RESET)
   }

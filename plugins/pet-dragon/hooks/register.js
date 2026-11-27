@@ -1164,7 +1164,7 @@ function checkSleepy($) {
 
 // Lights the headline never counts: the next release's open tickets and the daily spend are not something you can act on right now
 // bitbucket (PRs): your own PRs wait on your peers to review them, so they are not yours to act on. The Review light is.
-const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'bugs', 'bitbucket', 'points', 'pod'])
+const NOT_FOR_HEADLINE = new Set(['ship', 'cost', 'cache', 'aiqa', 'bugs', 'bitbucket', 'points', 'pod', 'pc'])
 const currentHeadline = () => headline(SOURCES.filter((s) => !NOT_FOR_HEADLINE.has(s.id)).map((s) => ({ label: s.hl ?? s.label, light: lights[s.id] })))
 
 function moodNow() {
