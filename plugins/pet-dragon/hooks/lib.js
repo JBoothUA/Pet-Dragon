@@ -233,10 +233,10 @@ export function coreApiLight(p, port) {
   detail.push('MSSQLSERVER service: ' + (p.sqlService ?? 'not installed'))
   detail.push('Docker SQL container: ' + (p.dockerSql === 'daemon-off' ? 'Docker not running' : p.dockerSql || 'none'))
   for (const ev of p.dbEvidence ?? []) detail.push('evidence: ' + ev)
-  if (!p.up) return { color: COLORS.red, value: 'down', short: 'CoreAPI is not listening on :' + port, detail }
-  const who = (p.process ?? 'process') + ' pid ' + p.pid
-  // What a switch needs: the local SQL Server service running, or a Docker container publishing 1433
+  // What a start or switch needs: the local SQL Server service running, or a Docker container publishing 1433
   const ready = { dockerReady: Boolean(p.dockerSql) && p.dockerSql !== 'daemon-off', localReady: p.sqlService === 'Running' }
+  if (!p.up) return { color: COLORS.red, value: 'down', short: 'CoreAPI is not listening on :' + port + '. Click "down" to start it', detail, ...ready }
+  const who = (p.process ?? 'process') + ' pid ' + p.pid
   if (p.db === 'local') return { color: COLORS.green, value: 'local db', short: 'CoreAPI up (' + who + ') \u2192 local SQL Server. Click "local db" to switch to Docker', detail, ...ready }
   if (p.db === 'docker') return { color: COLORS.teal, value: 'docker db', short: 'CoreAPI up (' + who + ') \u2192 Docker SQL container. Click "docker db" to switch to local', detail, ...ready }
   if (p.db === 'remote') return { color: COLORS.amber, value: 'remote db', short: 'CoreAPI up (' + who + ') \u2192 a remote SQL Server', detail }

@@ -201,6 +201,8 @@ Set `token_coach` to `auto` and Dragon also runs `/compact` for you between turn
 
 On the **Core** light, the name still opens Swagger. The database text beside it (`local db` or `docker db`) is its own button: click it and Dragon asks whether to switch to the other one. On yes it runs `use-docker-db.ps1` or `use-local-db.ps1` (from your Desktop, or `db_scripts_dir`), which stop CoreAPI and restart it on :5236 pointed at that database, then refreshes the light. It refuses, with a toast, when the target is not available: no Docker SQL container publishing :1433, or the local `MSSQLSERVER` service stopped.
 
+When CoreAPI is down, that same spot reads `down` and is a button too: click it and Dragon asks whether to start CoreAPI on your local or Docker DB, then runs the same script and refuses the same way when that database is not available.
+
 ## Development
 
 - `npm run setup` once per clone: git then runs `npm run check` before every push (skip one push with `git push --no-verify`).

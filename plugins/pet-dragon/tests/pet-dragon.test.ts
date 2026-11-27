@@ -119,6 +119,9 @@ const toasted: string[] = []
 const speakRuns: string[] = []
 const speakSaid: string[] = []
 const teamsStarts: string[] = []
+// What the CoreAPI probe prints, and every switch-db.ps1 run (a start or a switch)
+let coreProbe = CORE_UP_LOCAL
+const dbSwitches: string[] = []
 let speakAnswer = 'Voice replies: ON'
 function stubSession(on, asked: string[], answer: string, opened: string[] = []) {
   const clock = mock.clock(on)
@@ -154,7 +157,10 @@ function stubSession(on, asked: string[], answer: string, opened: string[] = [])
       teamsStarts.push(argv)
       stdout = 'started new Teams'
     } else if (argv.includes('open-url')) opened.push(argv)
-    else if (argv.includes('coreapi-probe')) stdout = CORE_UP_LOCAL
+    else if (argv.includes('switch-db')) {
+      dbSwitches.push(argv)
+      stdout = JSON.stringify({ ok: true })
+    } else if (argv.includes('coreapi-probe')) stdout = coreProbe
     else if (argv.includes('ports-probe')) stdout = PORTS
     else if (argv.includes('messages-probe')) stdout = MAIL
     else if (argv.includes('twg jira')) stdout = JIRA
@@ -222,6 +228,46 @@ test('pressing the Core database text offers a switch, and refuses when the othe
   expect(toasted.join(' ')).toContain('No Docker SQL container')
   expect(opened.length).toBe(0)
   await ui.unmount()
+})
+
+test('pressing "down" on the Core light asks which database, then starts CoreAPI on it', async ($, on) => {
+  coreProbe = JSON.stringify({ up: false, sqlService: 'Running', dockerSql: 'daemon-off' })
+  dbSwitches.length = 0
+  try {
+    const asked: string[] = []
+    const clock = stubSession(on, asked, 'Start on local db')
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+    await clock.advance(9_000)
+
+    const ui = await $.ui.mount(BAND)
+    expect(await ui.find({ type: 'Text', text: 'down' })).toBeDefined()
+    await ui.press({ key: 'drg-light-coreapi-db' })
+    expect(asked.join(' ')).toContain('Start it on which database')
+    expect(dbSwitches.length).toBe(1)
+    expect(dbSwitches[0]).toMatch(/switch-db\.ps1/)
+    expect(dbSwitches[0]).toContain('local')
+    await ui.unmount()
+  } finally {
+    coreProbe = CORE_UP_LOCAL
+  }
+})
+
+test('starting a down CoreAPI refuses a database that is not up', async ($, on) => {
+  coreProbe = JSON.stringify({ up: false, sqlService: 'Running', dockerSql: 'daemon-off' })
+  dbSwitches.length = 0
+  try {
+    const clock = stubSession(on, [], 'Start on docker db')
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: 'C:\\repo' })
+    await clock.advance(9_000)
+
+    const ui = await $.ui.mount(BAND)
+    await ui.press({ key: 'drg-light-coreapi-db' })
+    expect(toasted.join(' ')).toContain('No Docker SQL container')
+    expect(dbSwitches.length).toBe(0)
+    await ui.unmount()
+  } finally {
+    coreProbe = CORE_UP_LOCAL
+  }
 })
 
 test('accepting a suggested skill adds it to the prompt context', async ($, on) => {
@@ -578,6 +624,12 @@ test('Core light says which database it uses and whether the other is ready to s
   expect(docker.value).toBe('docker db')
   expect(docker.dockerReady).toBe(true)
   expect(docker.localReady).toBe(false)
+  // Down still says what a start could use, so the start can refuse an unavailable database
+  const down = coreApiLight({ up: false, sqlService: 'Running', dockerSql: 'sql1' }, 5236)
+  expect(down.value).toBe('down')
+  expect(down.localReady).toBe(true)
+  expect(down.dockerReady).toBe(true)
+  expect(down.short).toContain('start it')
 })
 
 test('A remembered scoped run is not a suite total, so a restart re-runs the full suite', () => {

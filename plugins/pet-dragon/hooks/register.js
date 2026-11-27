@@ -683,22 +683,65 @@ async function syncBehind($, id) {
   return true
 }
 
-// CoreAPI's database toggle: "local db" offers Docker, "docker db" offers local; any other state offers nothing
+// CoreAPI's database toggle: "local db" offers Docker, "docker db" offers local; "down" offers to start it on either; any other state offers nothing
 const dbSwitchTarget = (l) => (l?.value === 'local db' ? 'docker' : l?.value === 'docker db' ? 'local' : undefined)
+const coreIsDown = (l) => l?.value === 'down'
 let switchingDb = false
+
+// Why CoreAPI cannot be pointed at this database right now, or '' when it can
+function dbNotReady(cur, to) {
+  if (to === 'docker' && cur?.dockerReady === false) return 'No Docker SQL container is publishing :1433. Start Docker and its SQL container, then try again.'
+  if (to === 'local' && cur?.localReady === false) return 'The local SQL Server service (MSSQLSERVER) is not running. Start it, then try again.'
+  return ''
+}
+
+// Runs use-<to>-db.ps1 (it stops CoreAPI if it is running, then starts it on that database) and refreshes the light
+async function restartCoreOn($, to, starting) {
+  const cur = lights.coreapi
+  switchingDb = true
+  setLight('coreapi', { ...cur, color: COLORS.working, value: 'switching', short: (starting ? 'Starting' : 'Restarting') + ' CoreAPI on the ' + to + ' DB (use-' + to + '-db.ps1)…' }, await $.clock.now())
+  $.ui.invalidate('ui.render')
+  try {
+    const r = await $.process.run(
+      ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $.plugin.root + '\\scripts\\switch-db.ps1', '-Target', to, '-Dir', String(opts.db_scripts_dir ?? ''), '-Port', String(opts.coreapi_port)],
+      { timeoutMs: 240_000 },
+    )
+    const res = parseJson(r.stdout)
+    const name = (starting ? 'Start on ' : 'Switch to ') + to + ' DB'
+    if (res?.ok) $.ui.toast('CoreAPI is ' + (starting ? 'up' : 'back up') + ' on your ' + to + ' DB.')
+    else $.ui.toast(name + ' did not finish: ' + shorten(res?.error ?? res?.tail ?? 'no answer from the script', 140))
+  } catch (err) {
+    $.ui.toast((starting ? 'Start on ' : 'Switch to ') + to + ' DB failed: ' + shorten(err?.message ?? err, 120))
+  } finally {
+    switchingDb = false
+    await poll($, 'coreapi', true)
+  }
+}
+
+// Pressing "down" on the Core light: ask which database, then start CoreAPI on it the same way a switch does
+async function startCore($) {
+  if (switchingDb) return
+  let answer = ''
+  try {
+    answer = await $.ui.ask(
+      'CoreAPI is not running. Start it on which database? This starts CoreAPI on :' + opts.coreapi_port + ' (runs use-local-db.ps1 or use-docker-db.ps1).',
+      { header: 'Dragon', options: ['Start on local db', 'Start on docker db'] },
+    )
+  } catch {
+    return
+  }
+  const to = answer === 'Start on local db' ? 'local' : answer === 'Start on docker db' ? 'docker' : undefined
+  if (!to) return
+  const refusal = dbNotReady(lights.coreapi, to)
+  if (refusal) return $.ui.toast(refusal)
+  await restartCoreOn($, to, true)
+}
 
 async function switchDb($, to) {
   if (switchingDb) return
   const from = to === 'docker' ? 'local' : 'docker'
-  const cur = lights.coreapi
-  if (to === 'docker' && cur?.dockerReady === false) {
-    $.ui.toast('No Docker SQL container is publishing :1433. Start Docker and its SQL container, then try again.')
-    return
-  }
-  if (to === 'local' && cur?.localReady === false) {
-    $.ui.toast('The local SQL Server service (MSSQLSERVER) is not running. Start it, then try again.')
-    return
-  }
+  const refusal = dbNotReady(lights.coreapi, to)
+  if (refusal) return $.ui.toast(refusal)
   let answer = ''
   try {
     answer = await $.ui.ask(
@@ -709,23 +752,7 @@ async function switchDb($, to) {
     return
   }
   if (answer !== 'Switch to ' + to + ' db') return
-  switchingDb = true
-  setLight('coreapi', { ...cur, color: COLORS.working, value: 'switching', short: 'Restarting CoreAPI on the ' + to + ' DB (use-' + to + '-db.ps1)\u2026' }, await $.clock.now())
-  $.ui.invalidate('ui.render')
-  try {
-    const r = await $.process.run(
-      ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $.plugin.root + '\\scripts\\switch-db.ps1', '-Target', to, '-Dir', String(opts.db_scripts_dir ?? ''), '-Port', String(opts.coreapi_port)],
-      { timeoutMs: 240_000 },
-    )
-    const res = parseJson(r.stdout)
-    if (res?.ok) $.ui.toast('CoreAPI is back up on your ' + to + ' DB.')
-    else $.ui.toast('Switch to ' + to + ' DB did not finish: ' + shorten(res?.error ?? res?.tail ?? 'no answer from the script', 140))
-  } catch (err) {
-    $.ui.toast('Switch to ' + to + ' DB failed: ' + shorten(err?.message ?? err, 120))
-  } finally {
-    switchingDb = false
-    await poll($, 'coreapi', true)
-  }
+  await restartCoreOn($, to, false)
 }
 
 // Advice Dragon has already announced this session; an item is re-armed once its condition clears
@@ -1631,9 +1658,9 @@ export function register(on, options) {
               if (url) openUrl($, url)
               else $.ui.open({ id: PANE, title: 'Pet Dragon', focus: true, closeOnEscape: true })
             }
-            // CoreAPI: the name still opens Swagger; the database text is its own target and offers the other database
+            // CoreAPI: the name still opens Swagger; the database text is its own target and offers the other database, or a start when it is down
             const dbTarget = s.id === 'coreapi' ? dbSwitchTarget(l) : undefined
-            if (dbTarget) {
+            if (dbTarget || (s.id === 'coreapi' && coreIsDown(l))) {
               return Box({
                 key: 'drg-light-coreapi',
                 flexDirection: 'row',
@@ -1649,7 +1676,7 @@ export function register(on, options) {
                     key: 'drg-light-coreapi-db',
                     plain: true,
                     hover: { scope: 'drg-coreapi-db', underline: true },
-                    onPress: () => switchDb($, dbTarget),
+                    onPress: () => (dbTarget ? switchDb($, dbTarget) : startCore($)),
                     children: [Text({ color, bold: true, children: [l.value] })],
                   }),
                 ],
@@ -1690,7 +1717,7 @@ export function register(on, options) {
     const now = Date.now()
     const reveals = [
       { scope: 'drg-mood', text: mood.label + ': ' + mood.short, more: 'Click the dragon to turn /speak voice replies on or off' },
-      { scope: 'drg-coreapi-db', text: 'CoreAPI database: ' + (lights.coreapi?.value ?? '?'), more: dbSwitchTarget(lights.coreapi) ? 'Click to switch CoreAPI to your ' + dbSwitchTarget(lights.coreapi) + ' DB (asks first)' : '' },
+      { scope: 'drg-coreapi-db', text: 'CoreAPI database: ' + (lights.coreapi?.value ?? '?'), more: dbSwitchTarget(lights.coreapi) ? 'Click to switch CoreAPI to your ' + dbSwitchTarget(lights.coreapi) + ' DB (asks first)' : coreIsDown(lights.coreapi) ? 'Click to start CoreAPI on your local or Docker DB (asks first)' : '' },
       { scope: 'drg-apis', text: 'APIs: CoreAPI, BFF, MoveDocs and the UI dev server', more: 'Click to start whichever are not running' },
       { scope: 'drg-standup', text: 'Standup: what changed in Jira, PRs and your commits since the previous working day', more: 'Click to print it in the chat' },
       ...SOURCES.map((s) => {
