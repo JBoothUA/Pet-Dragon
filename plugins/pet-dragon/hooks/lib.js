@@ -518,6 +518,12 @@ export function startupTestRecord(rec) {
 // A compile error, missing modules, out of memory, a crash or a timeout would fail the same way again.
 const RETRYABLE_PROBLEMS = ['locked', 'no result']
 
+// The color of a run where some parts gave no result: what did report decides it. A failure is red; passing tests with no failure are
+// green (the hover still lists the parts with no result, and a click runs them again); nothing reported at all stays amber.
+export function partialRunColor({ passed, failed }) {
+  return failed > 0 ? COLORS.red : passed > 0 ? COLORS.green : COLORS.amber
+}
+
 // Runs one part of a suite and says what it gave. runOnce() starts the part and resolves { code, output, elapsedMs }.
 // A part with no summary is retried once when the cause is RETRYABLE_PROBLEMS: a locked DLL or a build that collided with another run is
 // usually gone the second time. onRetry(problem) lets the caller say so, since the retry otherwise looks like a stalled light.

@@ -55,6 +55,7 @@ import {
   runTestPart,
   startupTestRecord,
   failureExcerpt,
+  partialRunColor,
   TEST_PROBLEM_VALUES,
   testKind,
   indexSkills,
@@ -639,6 +640,12 @@ test('A full run is recognized through cd, pipes and a solution file, and a cust
   const custom = { run: { runner: 'dotnet', passed: 900, failed: 0 }, command: 'my-test-script --all', at: 1 }
   expect(startupTestRecord(custom)).toBeUndefined()
   expect(startupTestRecord({ ...custom, full: true })).toBeDefined()
+})
+
+test('A run with passing tests and no failures is green even when some parts gave no result', () => {
+  expect(partialRunColor({ passed: 1880, failed: 0 })).toBe('#3ddc84')
+  expect(partialRunColor({ passed: 1880, failed: 2 })).toBe('#ff5252')
+  expect(partialRunColor({ passed: 0, failed: 0 })).toBe('#ffc107')
 })
 
 test('A failing part keeps its failure lines and its verdict, and nothing else', () => {

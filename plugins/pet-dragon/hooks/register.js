@@ -40,6 +40,7 @@ import {
   hangfireLight,
   seqLight,
   runTestPart,
+  partialRunColor,
   failureExcerpt,
   startupTestRecord,
   TEST_PROBLEM_VALUES,
@@ -810,7 +811,7 @@ async function runTestKind($, kind, force) {
     const detail = [total.passed + ' passed, ' + total.failed + ' failed in the ' + (count - problems.length) + ' parts that finished', ...problems.slice(0, 6).map((p) => p.label + ': ' + p.why + (p.line ? ' [' + shorten(p.line, 80) + ']' : ''))]
     const say = problems.length + ' of ' + count + ' parts gave no result: ' + names.join(', ') + (problems.length > 6 ? ', …' : '') + '. Click this light to run again'
     const headline = total.failed > 0 ? total.failed + ' fail' : total.passed > 0 ? total.passed + ' pass' : problems[0].value
-    setLight(light, { color: total.failed > 0 ? COLORS.red : COLORS.amber, value: headline, partial: true, short: (total.failed > 0 ? total.failed + ' failed, ' : '') + total.passed + ' passed; ' + say, detail }, await $.clock.now())
+    setLight(light, { color: partialRunColor(total), value: headline, partial: true, short: (total.failed > 0 ? total.failed + ' failed, ' : '') + total.passed + ' passed; ' + say, detail }, await $.clock.now())
   } finally {
     testBusy[kind] = false
   }

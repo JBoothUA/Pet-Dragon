@@ -1,7 +1,7 @@
 // Draws Dragon in every mood color, in real terminal colors, from the plugin's own frames.
 //   node tools/mascot-preview.mjs            every mood (working moods show the downstroke)
 //   node tools/mascot-preview.mjs --animate  the working animation for a few seconds
-import { IDLE, FLAP, SLEEP, FLAP_MS, MOODS, COLORS, PAL, SPRITE_WIDTH, spriteRows, rotateHue, shade, testLight, machineLight, cacheLight, ctxLight, headline } from '../plugins/pet-dragon/hooks/lib.js'
+import { IDLE, FLAP, SLEEP, FLAP_MS, MOODS, COLORS, PAL, SPRITE_WIDTH, spriteRows, rotateHue, shade, partialRunColor, testLight, machineLight, cacheLight, ctxLight, headline } from '../plugins/pet-dragon/hooks/lib.js'
 
 const RESET = '\x1b[0m'
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(';')
@@ -88,7 +88,7 @@ function printLights() {
   head('Test lights')
   console.log(chip('BE Tests', testLight(be, 'dotnet test, all 12 test projects', hours(2), now)))
   console.log(chip('BE Tests', testLight(be, 'dotnet test, all 12 test projects', hours(30), now)))
-  console.log(chip('BE Tests', { color: COLORS.amber, value: '1880 pass', short: '(sample) 2 of 12 parts gave no result: Core.Tests (build), Bff.Tests (locked). Click this light to run again' }))
+  console.log(chip('BE Tests', { color: partialRunColor({ passed: 1880, failed: 0 }), value: '1880 pass', short: '(sample) 2 of 12 parts gave no result: Core.Tests (build), Bff.Tests (locked). Click this light to run again' }))
   console.log(chip('FE Tests', testLight(fe, 'npx jest ColumnsVisibilityContext', hours(170), now, 'fe')))
   console.log(chip('FE Tests', testLight({ ...fe, passed: 5120, failed: 3 }, 'npm run test, full suite in 24 parts', hours(1), now, 'fe')))
   console.log(chip('FE Tests', { color: COLORS.working, value: '3/24', short: '(sample) Part 3 of 24 running' }))
