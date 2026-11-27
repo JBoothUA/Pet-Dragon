@@ -1534,7 +1534,8 @@ export function register(on, options) {
           ],
         }),
       ],
-    })    // The Standup button sits at the end of the headline row (the second line); pressing it prints the standup into the chat
+    })
+    // The Standup button sits at the end of the Comm row (the first row of lights); pressing it prints the standup into the chat
     const standupButton = Button({
       key: 'drg-standup-band',
       plain: true,
@@ -1556,7 +1557,6 @@ export function register(on, options) {
           wrap: 'truncate-end',
           children: [Text({ color: head.color, bold: true, children: ['\u25cf '] }), Text({ color: head.level === 'green' ? head.color : undefined, bold: head.level !== 'green', children: [head.text] })],
         }),
-        standupButton,
       ],
     })
     // Columns line up down the band when they fit beside the dragon; otherwise each row is as long as it needs to be
@@ -1587,7 +1587,8 @@ export function register(on, options) {
       }
       return cells
     }
-    const lightRow = (row) =>
+    // tail: an extra item after the row's lights (the Standup button)
+    const lightRow = (row, tail) =>
       Box({
         key: 'drg-row-' + row,
         flexDirection: 'row',
@@ -1662,6 +1663,7 @@ export function register(on, options) {
               ],
             })
           }),
+          ...(tail ? [Text({ key: 'drg-row-tail-gap-' + row, children: ['  '] }), tail] : []),
         ],
       })
 
@@ -1715,7 +1717,7 @@ export function register(on, options) {
     const mine = Box({
       key: 'drg-band',
       flexDirection: 'row',
-      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(0), lightRow(1), lightRow(6), lightRow(2), lightRow(5), lightRow(4), lightRow(3), infoLine] })],
+      children: [dragon, Box({ flexDirection: 'column', children: [caption, headlineRow, lightRow(6, standupButton), lightRow(1), lightRow(2), lightRow(0), lightRow(5), lightRow(4), lightRow(3), infoLine] })],
     })
     // Another mod's band draws beneath Dragon. Claude Code's own placeholder
     // ({ type: 'engine' }) is never nested, and a failing band never hides Dragon.
